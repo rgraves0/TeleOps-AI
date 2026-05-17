@@ -4,6 +4,7 @@ import logging
 
 from telegram import Update
 from telegram.ext import (
+    Application,
     CommandHandler,
     ContextTypes,
     MessageHandler,
@@ -33,7 +34,7 @@ async def ai_command(
     await update.effective_message.reply_text(
         (
             "🤖 AI Chat Mode Enabled\n\n"
-            "Send messages directly."
+            "Send messages directly to chat with AI."
         )
     )
 
@@ -55,11 +56,19 @@ async def ai_chat_handler(
 
     text = (
         update.effective_message.text
-        .strip()
     )
 
-    if not text:
+    if text is None:
         return
+
+    user_message = text.strip()
+
+    if not user_message:
+        return
+
+    telegram_user_id = (
+        update.effective_user.id
+    )
 
     processing_message = (
         await update.effective_message.reply_text(
@@ -71,31 +80,75 @@ async def ai_chat_handler(
         result = (
             await ai_service
             .process_user_message(
-                telegram_user_id=(
-                    update.effective_user.id
-                ),
-                user_message=text
+                telegram_user_id=telegram_user_id,
+                user_message=user_message
             )
         )
 
-        if result["type"] == "chat":
-            response_text = (
-                result["summary"]
+        result_type = result.get(
+            "type",
+            "unknown"
+        )
+
+        if result_type == "chat":
+            response_text = result.get(
+                "summary"
             )
 
+            if not response_text:
+                response_text = result.get(
+                    "response",
+                    "No response generated."
+                )
+
         else:
-            intent_data = (
-                result["intent_data"]
+            intent_data = result.get(
+                "intent_data",
+                {}
+            )
+
+            detected_intent = (
+                intent_data.get(
+                    "intent",
+                    "unknown"
+                )
+            )
+
+            confidence = (
+                intent_data.get(
+                    "confidence",
+                    0.0
+                )
+            )
+
+            summary = (
+                intent_data.get(
+                    "summary",
+                    "No summary available."
+                )
+            )
+
+            language = (
+                intent_data.get(
+                    "language",
+                    "unknown"
+                )
+            )
+
+            action_required = (
+                intent_data.get(
+                    "action_required",
+                    False
+                )
             )
 
             response_text = (
                 "🧠 Intent Analysis\n\n"
-                f"Intent: "
-                f"{intent_data.get('intent')}\n"
-                f"Confidence: "
-                f"{intent_data.get('confidence')}\n"
-                f"Summary: "
-                f"{intent_data.get('summary')}"
+                f"📌 Intent: {detected_intent}\n"
+                f"🌐 Language: {language}\n"
+                f"📊 Confidence: {confidence}\n"
+                f"⚡ Action Required: {action_required}\n\n"
+                f"📝 Summary:\n{summary}"
             )
 
         await processing_message.edit_text(
@@ -130,7 +183,7 @@ async def exit_ai_chat_command(
 
 
 def register_ai_chat_handlers(
-    application
+    application: Application
 ) -> None:
     application.add_handler(
         CommandHandler(
