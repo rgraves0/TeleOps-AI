@@ -3,51 +3,42 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-import aiosqlite
-
 from app.database.base import (
-    get_database_connection,
+    get_db,
 )
 
 logger = logging.getLogger(__name__)
-
-
-CREATE_CHAT_MEMORY_TABLE_QUERY = """
-CREATE TABLE IF NOT EXISTS chat_memory (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    telegram_user_id INTEGER NOT NULL,
-    role TEXT NOT NULL CHECK (
-        role IN ('user', 'assistant')
-    ),
-    content TEXT NOT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-"""
-
-
-CREATE_CHAT_MEMORY_INDEX_QUERY = """
-CREATE INDEX IF NOT EXISTS idx_chat_memory_user_id
-ON chat_memory (telegram_user_id);
-"""
 
 
 class ChatMemoryRepository:
     async def initialize_table(
         self
     ) -> None:
-        async with (
-            get_database_connection()
-            as connection
-        ):
-            await connection.execute(
-                CREATE_CHAT_MEMORY_TABLE_QUERY
-            )
+        db = await get_db()
 
-            await connection.execute(
-                CREATE_CHAT_MEMORY_INDEX_QUERY
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS chat_memory (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                telegram_user_id INTEGER NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
+            """
+        )
 
-            await connection.commit()
+        await db.execute(
+            """
+            CREATE INDEX IF NOT EXISTS
+            idx_chat_memory_telegram_user_id
+            ON chat_memory (
+                telegram_user_id
+            )
+            """
+        )
+
+        await db.commit()
 
         logger.info(
             "chat_memory table initialized"
@@ -58,131 +49,87 @@ class ChatMemoryRepository:
         telegram_user_id: int,
         role: str,
         content: str
-    ) -> int:
-        normalized_role = (
-            role.strip().lower()
+    ) -> None:
+        if not content.strip():
+            return
+
+        db = await get_db()
+
+        await db.execute(
+            """
+            INSERT INTO chat_memory (
+                telegram_user_id,
+                role,
+                content
+            )
+            VALUES (?, ?, ?)
+            """,
+            (
+                telegram_user_id,
+                role,
+                content.strip()
+            )
         )
 
-        if normalized_role not in (
-            "user",
-            "assistant"
-        ):
-            raise ValueError(
-                "role must be either "
-                "'user' or 'assistant'"
-            )
+        await db.commit()
 
-        cleaned_content = (
-            content.strip()
-        )
-
-        if not cleaned_content:
-            raise ValueError(
-                "content cannot be empty"
-            )
-
-        query = """
-        INSERT INTO chat_memory (
+        logger.debug(
+            "Stored chat memory "
+            "telegram_user_id=%s role=%s",
             telegram_user_id,
-            role,
-            content
+            role
         )
-        VALUES (?, ?, ?)
-        """
-
-        async with (
-            get_database_connection()
-            as connection
-        ):
-            cursor = await connection.execute(
-                query,
-                (
-                    telegram_user_id,
-                    normalized_role,
-                    cleaned_content
-                )
-            )
-
-            await connection.commit()
-
-            inserted_id = (
-                cursor.lastrowid
-            )
-
-        logger.info(
-            "Stored chat memory | "
-            "telegram_user_id=%s "
-            "role=%s "
-            "message_id=%s",
-            telegram_user_id,
-            normalized_role,
-            inserted_id
-        )
-
-        return int(inserted_id)
 
     async def get_recent_history(
         self,
         telegram_user_id: int,
         limit: int = 20
     ) -> list[dict[str, Any]]:
-        if limit <= 0:
-            limit = 20
+        db = await get_db()
 
-        query = """
-        SELECT
-            id,
-            telegram_user_id,
-            role,
-            content,
-            created_at
-        FROM chat_memory
-        WHERE telegram_user_id = ?
-        ORDER BY id DESC
-        LIMIT ?
-        """
-
-        async with (
-            get_database_connection()
-            as connection
-        ):
-            connection.row_factory = (
-                aiosqlite.Row
+        cursor = await db.execute(
+            """
+            SELECT
+                id,
+                telegram_user_id,
+                role,
+                content,
+                created_at
+            FROM chat_memory
+            WHERE telegram_user_id = ?
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (
+                telegram_user_id,
+                limit
             )
+        )
 
-            cursor = await connection.execute(
-                query,
-                (
-                    telegram_user_id,
-                    limit
-                )
-            )
+        rows = await cursor.fetchall()
 
-            rows = await cursor.fetchall()
+        await cursor.close()
 
-        history = [
-            {
-                "id": row["id"],
-                "telegram_user_id": (
-                    row[
+        history = []
+
+        for row in reversed(rows):
+            history.append(
+                {
+                    "id": row["id"],
+                    "telegram_user_id": row[
                         "telegram_user_id"
+                    ],
+                    "role": row["role"],
+                    "content": row["content"],
+                    "created_at": row[
+                        "created_at"
                     ]
-                ),
-                "role": row["role"],
-                "content": (
-                    row["content"]
-                ),
-                "created_at": (
-                    row["created_at"]
-                )
-            }
-            for row in reversed(rows)
-        ]
+                }
+            )
 
-        logger.info(
-            "Loaded chat memory | "
-            "telegram_user_id=%s "
-            "messages=%s",
+        logger.debug(
+            "Loaded memory history "
+            "telegram_user_id=%s count=%s",
             telegram_user_id,
             len(history)
         )
@@ -192,38 +139,26 @@ class ChatMemoryRepository:
     async def clear_history(
         self,
         telegram_user_id: int
-    ) -> int:
-        query = """
-        DELETE FROM chat_memory
-        WHERE telegram_user_id = ?
-        """
+    ) -> None:
+        db = await get_db()
 
-        async with (
-            get_database_connection()
-            as connection
-        ):
-            cursor = await connection.execute(
-                query,
-                (
-                    telegram_user_id,
-                )
+        await db.execute(
+            """
+            DELETE FROM chat_memory
+            WHERE telegram_user_id = ?
+            """,
+            (
+                telegram_user_id,
             )
-
-            await connection.commit()
-
-            deleted_count = (
-                cursor.rowcount
-            )
-
-        logger.info(
-            "Cleared chat memory | "
-            "telegram_user_id=%s "
-            "deleted=%s",
-            telegram_user_id,
-            deleted_count
         )
 
-        return int(deleted_count)
+        await db.commit()
+
+        logger.info(
+            "Cleared chat memory "
+            "telegram_user_id=%s",
+            telegram_user_id
+        )
 
 
 chat_memory_repository = (
