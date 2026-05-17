@@ -9,16 +9,16 @@ logger = logging.getLogger(__name__)
 
 class WebSearchPlugin:
     def __init__(self) -> None:
-        self.base_url = "https://html.duckduckgo.com/html/" [cite: 815]
-        self.timeout = 30 [cite: 815]
+        self.base_url = "https://html.duckduckgo.com/html/"
+        self.timeout = 30
         self.headers = {
-            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36", [cite: 816]
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8", [cite: 817]
-            "Accept-Language": "en-US,en;q=0.9", [cite: 818]
-            "Cache-Control": "no-cache", [cite: 818]
-            "Pragma": "no-cache", [cite: 818, 819]
-            "Referer": "https://duckduckgo.com/", [cite: 819]
-            "Connection": "keep-alive", [cite: 819]
+            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Cache-Control": "no-cache",
+            "Pragma": "no-cache",
+            "Referer": "https://duckduckgo.com/",
+            "Connection": "keep-alive",
         }
 
     async def search(self, query: str, max_results: int = 5) -> str:
