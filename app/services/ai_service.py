@@ -4,7 +4,6 @@ import json
 import logging
 import os
 import platform
-from collections import defaultdict
 from datetime import datetime
 from typing import Any
 
@@ -17,6 +16,9 @@ from app.ai.prompts import (
 from app.ai.provider import (
     AIProvider,
     AIProviderException,
+)
+from app.database.repositories.chat_memory import (
+    chat_memory_repository,
 )
 from app.plugins.loader import (
     plugin_loader,
@@ -47,12 +49,7 @@ class AIService:
     def __init__(self):
         self.provider = AIProvider()
 
-        self.memory: dict[
-            int,
-            list[dict[str, str]]
-        ] = defaultdict(list)
-
-        self.max_memory_messages = 12
+        self.max_memory_messages = 20
 
         self.tool_keywords = {
             "weather": [
@@ -140,6 +137,14 @@ class AIService:
                     )
                 )
 
+                await (
+                    self.store_conversation_pair(
+                        telegram_user_id,
+                        message,
+                        response
+                    )
+                )
+
                 return {
                     "type": "chat",
                     "response": response
@@ -181,6 +186,14 @@ class AIService:
                 )
             )
 
+            await (
+                self.store_conversation_pair(
+                    telegram_user_id,
+                    message,
+                    summarized_response
+                )
+            )
+
             return {
                 "type": "tool",
                 "response": summarized_response,
@@ -196,6 +209,14 @@ class AIService:
             fallback_response = (
                 await self.generate_friendly_error(
                     user_message=message
+                )
+            )
+
+            await (
+                self.store_conversation_pair(
+                    telegram_user_id,
+                    message,
+                    fallback_response
                 )
             )
 
@@ -219,13 +240,56 @@ class AIService:
 
         return "chat"
 
+    async def build_memory_context(
+        self,
+        telegram_user_id: int
+    ) -> list[dict[str, str]]:
+        history = await (
+            chat_memory_repository
+            .get_recent_history(
+                telegram_user_id=(
+                    telegram_user_id
+                ),
+                limit=(
+                    self.max_memory_messages
+                )
+            )
+        )
+
+        messages: list[
+            dict[str, str]
+        ] = []
+
+        for item in history:
+            role = item.get(
+                "role",
+                "user"
+            )
+
+            content = item.get(
+                "content",
+                ""
+            )
+
+            if not content:
+                continue
+
+            messages.append(
+                {
+                    "role": role,
+                    "content": content
+                }
+            )
+
+        return messages
+
     async def handle_chat(
         self,
         telegram_user_id: int,
         message: str
     ) -> str:
         memory_context = (
-            self.get_memory_context(
+            await self.build_memory_context(
                 telegram_user_id
             )
         )
@@ -252,18 +316,6 @@ class AIService:
             self.provider.generate_response(
                 messages=messages
             )
-        )
-
-        self.append_memory(
-            telegram_user_id,
-            "user",
-            message
-        )
-
-        self.append_memory(
-            telegram_user_id,
-            "assistant",
-            response
         )
 
         return response
@@ -293,7 +345,8 @@ class AIService:
         )
 
         logger.info(
-            "Intent parser raw response=%s",
+            "Intent parser raw "
+            "response=%s",
             raw_response
         )
 
@@ -315,7 +368,8 @@ class AIService:
 
         except Exception:
             logger.exception(
-                "Failed to parse intent JSON"
+                "Failed to parse "
+                "intent JSON"
             )
 
             return {
@@ -556,16 +610,18 @@ class AIService:
 
         if tool_error:
             instruction = (
-                "The tool execution failed. "
-                "Explain the failure politely "
-                "without exposing raw system "
-                "errors."
+                "The tool execution "
+                "failed. Explain the "
+                "failure politely "
+                "without exposing "
+                "raw system errors."
             )
 
         else:
             instruction = (
-                "Summarize the tool result "
-                "naturally and conversationally."
+                "Summarize the tool "
+                "result naturally "
+                "and conversationally."
             )
 
         summary_prompt = [
@@ -576,7 +632,8 @@ class AIService:
             {
                 "role": "user",
                 "content": (
-                    f"Original User Message:\n"
+                    f"Original User "
+                    f"Message:\n"
                     f"{original_user_message}\n\n"
                     f"Intent:\n"
                     f"{intent}\n\n"
@@ -600,21 +657,22 @@ class AIService:
 
         except Exception as exc:
             logger.exception(
-                "Tool summarization failed: %s",
+                "Tool summarization "
+                "failed: %s",
                 exc
             )
 
             if tool_error:
                 return (
                     "⚠️ Sorry, I couldn't "
-                    "complete that request "
-                    "right now."
+                    "complete that "
+                    "request right now."
                 )
 
             return (
-                "⚠️ I received the result, "
-                "but couldn't summarize it "
-                "properly."
+                "⚠️ I received the "
+                "result, but couldn't "
+                "summarize it properly."
             )
 
     async def generate_friendly_error(
@@ -629,10 +687,12 @@ class AIService:
             {
                 "role": "user",
                 "content": (
-                    "Generate a polite AI "
-                    "assistant error reply "
-                    "for the following user "
-                    f"message:\n{user_message}"
+                    "Generate a polite "
+                    "AI assistant error "
+                    "reply for the "
+                    "following user "
+                    f"message:\n"
+                    f"{user_message}"
                 )
             }
         ]
@@ -647,9 +707,10 @@ class AIService:
 
         except Exception:
             return (
-                "⚠️ Sorry, something went "
-                "wrong while processing "
-                "your request."
+                "⚠️ Sorry, something "
+                "went wrong while "
+                "processing your "
+                "request."
             )
 
     async def handle_chat_fallback(
@@ -673,61 +734,64 @@ class AIService:
             )
         )
 
-    def append_memory(
+    async def store_conversation_pair(
         self,
         telegram_user_id: int,
-        role: str,
-        content: str
+        user_message: str,
+        assistant_message: str
     ) -> None:
-        self.memory[
-            telegram_user_id
-        ].append(
-            {
-                "role": role,
-                "content": content
-            }
-        )
-
-        if (
-            len(
-                self.memory[
-                    telegram_user_id
-                ]
-            )
-            > self.max_memory_messages
-        ):
-            self.memory[
-                telegram_user_id
-            ] = (
-                self.memory[
-                    telegram_user_id
-                ][
-                    -self.max_memory_messages:
-                ]
+        try:
+            await (
+                chat_memory_repository
+                .store_message(
+                    telegram_user_id=(
+                        telegram_user_id
+                    ),
+                    role="user",
+                    content=user_message
+                )
             )
 
-    def get_memory_context(
-        self,
-        telegram_user_id: int
-    ) -> list[dict[str, str]]:
-        return list(
-            self.memory.get(
-                telegram_user_id,
-                []
+            await (
+                chat_memory_repository
+                .store_message(
+                    telegram_user_id=(
+                        telegram_user_id
+                    ),
+                    role="assistant",
+                    content=assistant_message
+                )
             )
-        )
+
+        except Exception:
+            logger.exception(
+                "Failed to store "
+                "chat memory"
+            )
 
     async def clear_memory(
         self,
         telegram_user_id: int
     ) -> None:
-        if (
-            telegram_user_id
-            in self.memory
-        ):
-            del self.memory[
+        try:
+            await (
+                chat_memory_repository
+                .clear_history(
+                    telegram_user_id
+                )
+            )
+
+            logger.info(
+                "Memory cleared "
+                "telegram_user_id=%s",
                 telegram_user_id
-            ]
+            )
+
+        except Exception:
+            logger.exception(
+                "Failed to clear "
+                "chat memory"
+            )
 
     async def health_check(
         self
