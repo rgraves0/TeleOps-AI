@@ -33,7 +33,8 @@ DEFAULT_DENY = (
     os.getenv(
         "DEFAULT_DENY",
         "true"
-    ).lower() == "true"
+    ).strip().lower()
+    == "true"
 )
 
 
@@ -42,9 +43,17 @@ async def auth_middleware(
     context: ContextTypes.DEFAULT_TYPE
 ) -> None:
     if update.effective_user is None:
+        logger.warning(
+            "Blocked update without effective_user"
+        )
+
         raise ApplicationHandlerStop
 
-    telegram_user = update.effective_user
+    telegram_user = (
+        update.effective_user
+    )
+
+    telegram_id = telegram_user.id
 
     try:
         user = (
@@ -54,38 +63,61 @@ async def auth_middleware(
             )
         )
 
-        context.user_data["user"] = user
-        context.user_data["role"] = (
-            user["role_name"]
-        )
-
-        telegram_id = telegram_user.id
-
-        if (
-            DEFAULT_DENY
-            and telegram_id not in OWNER_IDS
-        ):
-            if update.effective_message:
-                await update.effective_message.reply_text(
-                    "❌ Access Denied"
-                )
-
-            logger.warning(
-                "Default deny blocked user: %s",
-                telegram_id
-            )
-
-            raise ApplicationHandlerStop
-
     except Exception as exc:
         logger.exception(
-            "Authentication middleware error: %s",
+            "Authentication failed for "
+            "telegram_id=%s: %s",
+            telegram_id,
             exc
         )
 
         if update.effective_message:
             await update.effective_message.reply_text(
-                "❌ Access Denied"
+                "❌ Authentication Failed"
             )
 
         raise ApplicationHandlerStop
+
+    if DEFAULT_DENY:
+        if telegram_id not in OWNER_IDS:
+            logger.warning(
+                "Default deny blocked "
+                "telegram_id=%s",
+                telegram_id
+            )
+
+            if update.effective_message:
+                await update.effective_message.reply_text(
+                    "❌ Access Denied"
+                )
+
+            raise ApplicationHandlerStop
+
+    context.user_data["user"] = user
+
+    context.user_data["user_id"] = (
+        user["id"]
+    )
+
+    context.user_data["telegram_id"] = (
+        user["telegram_id"]
+    )
+
+    context.user_data["role"] = (
+        user["role_name"]
+    )
+
+    context.user_data["full_name"] = (
+        user["full_name"]
+    )
+
+    context.user_data["username"] = (
+        user["username"]
+    )
+
+    logger.info(
+        "Authenticated telegram_id=%s "
+        "role=%s",
+        telegram_id,
+        user["role_name"]
+    )
