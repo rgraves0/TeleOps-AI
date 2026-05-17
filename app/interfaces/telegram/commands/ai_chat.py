@@ -1,8 +1,273 @@
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import logging
+import os
+from datetime import datetime
+
+import pytz
+from dotenv import load_dotenv
+
+from telegram import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Update,
+)
+
+from telegram.constants import (
+    ChatAction,
+    ParseMode,
+)
+
+from telegram.ext import (
+    Application,
+    CallbackQueryHandler,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    filters,
+)
+
+from app.database.repositories.users import (
+    UserRepository,
+)
+
+from app.services.ai_service import (
+    AIService,
+)
+
+from app.services.reminder_service import (
+    ReminderService,
+)
+
+load_dotenv()
+
+logger = logging.getLogger(__name__)
+
+TIMEZONE = os.getenv(
+    "TIMEZONE",
+    "Asia/Bangkok"
+)
+
+timezone = pytz.timezone(
+    TIMEZONE
+)
+
+user_repository = UserRepository()
+
+reminder_service = ReminderService()
+
+ai_service = AIService()
+
+
+# =========================================================
+# AI MODE COMMANDS
+# =========================================================
+
+async def ai_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+) -> None:
+
+    context.user_data["ai_mode"] = True
+
+    message = (
+        "🤖 <b>AI Chat Mode Enabled</b>\n\n"
+        "You can now chat naturally with TeleOps-AI.\n\n"
+        "Examples:\n"
+        "• Search latest AI news\n"
+        "• Check unread emails\n"
+        "• Find backup.zip\n"
+        "• What's the weather in Tokyo?\n"
+        "• YGN to BKK flight schedule\n\n"
+        "Use /exitai to leave AI mode."
+    )
+
+    await update.message.reply_text(
+        text=message,
+        parse_mode=ParseMode.HTML
+    )
+
+
+async def exit_ai_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+) -> None:
+
+    context.user_data["ai_mode"] = False
+
+    await update.message.reply_text(
+        text=(
+            "✅ <b>AI Chat Mode Disabled</b>\n\n"
+            "You are now back in normal command mode."
+        ),
+        parse_mode=ParseMode.HTML
+    )
+
+
+async def clear_memory_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+) -> None:
+
+    telegram_user_id = (
+        update.effective_user.id
+    )
+
+    await ai_service.clear_memory(
+        telegram_user_id
+    )
+
+    await update.message.reply_text(
+        text=(
+            "🧠 <b>Conversation memory cleared.</b>"
+        ),
+        parse_mode=ParseMode.HTML
+    )
+
+
+# =========================================================
+# AI HELPERS
+# =========================================================
+
+async def typing_indicator_loop(
+    context: ContextTypes.DEFAULT_TYPE,
+    chat_id: int,
+    stop_event: asyncio.Event
+) -> None:
+
+    try:
+
+        while not stop_event.is_set():
+
+            await context.bot.send_chat_action(
+                chat_id=chat_id,
+                action=ChatAction.TYPING
+            )
+
+            await asyncio.sleep(4)
+
+    except asyncio.CancelledError:
+
+        raise
+
+    except Exception as exc:
+
+        logger.exception(
+            "Typing indicator failed: %s",
+            exc
+        )
+
+
+async def update_processing_message(
+    processing_message,
+    text: str
+) -> None:
+
+    try:
+
+        await processing_message.edit_text(
+            text=text,
+            parse_mode=ParseMode.HTML
+        )
+
+    except Exception as exc:
+
+        logger.debug(
+            "Processing message update skipped: %s",
+            exc
+        )
+
+
+def detect_processing_stage(
+    user_message: str
+) -> str:
+
+    lowered = user_message.lower()
+
+    if any(
+        keyword in lowered
+        for keyword in [
+            "email",
+            "mail",
+            "inbox"
+        ]
+    ):
+
+        return (
+            "📧 <b>Fetching unread emails...</b>"
+        )
+
+    if any(
+        keyword in lowered
+        for keyword in [
+            "weather",
+            "temperature",
+            "rain"
+        ]
+    ):
+
+        return (
+            "🌦 <b>Checking weather data...</b>"
+        )
+
+    if any(
+        keyword in lowered
+        for keyword in [
+            "search",
+            "news",
+            "google",
+            "internet",
+            "flight",
+            "schedule"
+        ]
+    ):
+
+        return (
+            "🌐 <b>Searching the web...</b>"
+        )
+
+    if any(
+        keyword in lowered
+        for keyword in [
+            ".zip",
+            ".pdf",
+            ".doc",
+            ".docx",
+            "find",
+            "storage",
+            "backup"
+        ]
+    ):
+
+        return (
+            "☁️ <b>Searching cloud storage...</b>"
+        )
+
+    if any(
+        keyword in lowered
+        for keyword in [
+            "system",
+            "status",
+            "cpu",
+            "ram"
+        ]
+    ):
+
+        return (
+            "🖥 <b>Collecting system status...</b>"
+        )
+
+    return "🤔 <b>Thinking...</b>"
+
+
 def format_ai_response(
     response_text: str
 ) -> str:
 
     if not response_text:
+
         return "No response generated."
 
     cleaned = str(
@@ -109,7 +374,9 @@ async def ai_chat_handler(
 
     processing_message = (
         await update.message.reply_text(
-            text="🤖 <b>Processing request...</b>",
+            text=(
+                "🤖 <b>Processing request...</b>"
+            ),
             parse_mode=ParseMode.HTML
         )
     )
@@ -253,4 +520,81 @@ async def ai_chat_handler(
         with contextlib.suppress(
             asyncio.CancelledError
         ):
+
             await typing_task
+
+
+# =========================================================
+# CALENDAR COMMANDS
+# =========================================================
+
+async def calendar_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+) -> None:
+
+    if not update.effective_message:
+        return
+
+    keyboard = [
+        [
+            InlineKeyboardButton(
+                text="➕ Add Event",
+                callback_data="calendar_add"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                text="📅 List Events",
+                callback_data="calendar_list"
+            )
+        ]
+    ]
+
+    await update.effective_message.reply_text(
+        text="📅 Calendar Menu",
+        reply_markup=InlineKeyboardMarkup(
+            keyboard
+        )
+    )
+
+
+def register_ai_chat_handlers(
+    application: Application
+) -> None:
+
+    application.add_handler(
+        CommandHandler(
+            "ai",
+            ai_command
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "exitai",
+            exit_ai_command
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "clear",
+            clear_memory_command
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "calendar",
+            calendar_command
+        )
+    )
+
+    application.add_handler(
+        MessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            ai_chat_handler
+        ),
+        group=0
+    )
