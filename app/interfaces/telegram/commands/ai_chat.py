@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import logging
 
-from telegram import Update
+from telegram import (
+    Update,
+)
+from telegram.constants import (
+    ChatAction,
+)
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -20,21 +25,32 @@ logger = logging.getLogger(__name__)
 ai_service = AIService()
 
 
-async def ai_command(
+async def ai_mode_command(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
 ) -> None:
-    if not update.effective_message:
-        return
+    context.user_data["ai_mode"] = True
 
-    context.chat_data[
-        "ai_chat_mode"
-    ] = True
-
-    await update.effective_message.reply_text(
+    await update.message.reply_text(
         (
             "🤖 AI Chat Mode Enabled\n\n"
-            "Send messages directly to chat with AI."
+            "You can now chat naturally with the AI assistant.\n"
+            "Tools, reminders, search, and actions are available automatically.\n\n"
+            "Use /exitai to leave AI mode."
+        )
+    )
+
+
+async def exit_ai_mode_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    context.user_data["ai_mode"] = False
+
+    await update.message.reply_text(
+        (
+            "✅ AI Chat Mode Disabled\n\n"
+            "You are now back in normal bot command mode."
         )
     )
 
@@ -43,116 +59,72 @@ async def ai_chat_handler(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
 ) -> None:
-    if not context.chat_data.get(
-        "ai_chat_mode"
-    ):
+    if not update.message:
         return
 
-    if not update.effective_message:
-        return
-
-    if not update.effective_user:
-        return
-
-    text = (
-        update.effective_message.text
+    ai_mode = context.user_data.get(
+        "ai_mode",
+        False
     )
 
-    if text is None:
+    if not ai_mode:
         return
 
-    user_message = text.strip()
+    user_message = (
+        update.message.text or ""
+    ).strip()
 
     if not user_message:
         return
 
+    telegram_user = update.effective_user
+
+    if telegram_user is None:
+        return
+
     telegram_user_id = (
-        update.effective_user.id
+        telegram_user.id
     )
 
     processing_message = (
-        await update.effective_message.reply_text(
+        await update.message.reply_text(
             "🧠 Processing..."
         )
     )
 
     try:
-        result = (
-            await ai_service
-            .process_user_message(
+        await context.bot.send_chat_action(
+            chat_id=update.effective_chat.id,
+            action=ChatAction.TYPING
+        )
+
+        result = await (
+            ai_service.process_user_message(
                 telegram_user_id=telegram_user_id,
-                user_message=user_message
+                message=user_message
             )
         )
 
-        result_type = result.get(
-            "type",
-            "unknown"
-        )
+        response_text = ""
 
-        if result_type == "chat":
-            response_text = result.get(
-                "summary"
+        if isinstance(result, dict):
+            response_text = (
+                result.get("response")
+                or result.get("message")
+                or result.get("summary")
+                or "⚠️ Empty AI response"
             )
-
-            if not response_text:
-                response_text = result.get(
-                    "response",
-                    "No response generated."
-                )
 
         else:
-            intent_data = result.get(
-                "intent_data",
-                {}
-            )
+            response_text = str(result)
 
-            detected_intent = (
-                intent_data.get(
-                    "intent",
-                    "unknown"
-                )
-            )
-
-            confidence = (
-                intent_data.get(
-                    "confidence",
-                    0.0
-                )
-            )
-
-            summary = (
-                intent_data.get(
-                    "summary",
-                    "No summary available."
-                )
-            )
-
-            language = (
-                intent_data.get(
-                    "language",
-                    "unknown"
-                )
-            )
-
-            action_required = (
-                intent_data.get(
-                    "action_required",
-                    False
-                )
-            )
-
+        if not response_text.strip():
             response_text = (
-                "🧠 Intent Analysis\n\n"
-                f"📌 Intent: {detected_intent}\n"
-                f"🌐 Language: {language}\n"
-                f"📊 Confidence: {confidence}\n"
-                f"⚡ Action Required: {action_required}\n\n"
-                f"📝 Summary:\n{summary}"
+                "⚠️ AI returned an empty response."
             )
 
         await processing_message.edit_text(
-            response_text
+            response_text[:4096]
         )
 
     except Exception as exc:
@@ -162,24 +134,11 @@ async def ai_chat_handler(
         )
 
         await processing_message.edit_text(
-            "❌ AI processing failed"
+            (
+                "❌ AI request failed.\n"
+                "Please try again later."
+            )
         )
-
-
-async def exit_ai_chat_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-) -> None:
-    if not update.effective_message:
-        return
-
-    context.chat_data[
-        "ai_chat_mode"
-    ] = False
-
-    await update.effective_message.reply_text(
-        "🚪 AI Chat Mode Disabled"
-    )
 
 
 def register_ai_chat_handlers(
@@ -188,21 +147,24 @@ def register_ai_chat_handlers(
     application.add_handler(
         CommandHandler(
             "ai",
-            ai_command
+            ai_mode_command
         )
     )
 
     application.add_handler(
         CommandHandler(
             "exitai",
-            exit_ai_chat_command
+            exit_ai_mode_command
         )
     )
 
     application.add_handler(
         MessageHandler(
-            filters.TEXT
-            & ~filters.COMMAND,
+            (
+                filters.TEXT
+                & ~filters.COMMAND
+            ),
             ai_chat_handler
-        )
+        ),
+        group=0
     )
