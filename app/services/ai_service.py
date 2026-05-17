@@ -231,9 +231,9 @@ class AIService:
 
         self.provider = AIProvider()
 
-        self.max_history_messages = 20
+        self.max_history_messages = 6
 
-        self.max_email_body_chars = 2000
+        self.max_email_body_chars = 500
 
         self.rclone_repository = (
             RcloneMetaRepository()
