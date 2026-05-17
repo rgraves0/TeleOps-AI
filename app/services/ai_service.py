@@ -26,19 +26,20 @@ from app.plugins.loader import (
 logger = logging.getLogger(__name__)
 
 
-AGENT_ROUTER_PROMPT = """
-You are TeleOps-AI Autonomous Router.
+AGENT_WORKFLOW_PROMPT = """
+You are TeleOps-AI Autonomous Agent Planner.
 
-Your task is to decide whether the user's request:
-1. Needs a tool/plugin
-2. Or can be answered directly as casual conversation
+Your job:
+- Analyze the user's request
+- Decide whether tools are needed
+- Create a multi-step execution workflow
+- Tools can be chained together sequentially
 
 AVAILABLE TOOLS:
 
 1. web_search
 Purpose:
 - Search latest news
-- Search facts
 - Search internet information
 - Search current events
 Parameters:
@@ -49,10 +50,10 @@ Parameters:
 
 2. weather
 Purpose:
-- Weather forecast
+- Weather information
+- Forecast
+- Rain
 - Temperature
-- Climate
-- Rain information
 Parameters:
 {
   "tool": "weather",
@@ -63,38 +64,75 @@ Parameters:
 Purpose:
 - CPU usage
 - RAM usage
-- Disk usage
 - System health
 Parameters:
 {
   "tool": "system_status"
 }
 
-RULES:
-- If tool is needed, return ONLY valid JSON.
-- If no tool is needed, return:
+AVAILABLE AI TASKS:
+
+1. summarize
+Purpose:
+- Summarize previous tool outputs
+
+2. translate
+Purpose:
+- Translate previous outputs
+
+3. explain
+Purpose:
+- Explain results naturally
+
+WORKFLOW RULES:
+- Return ONLY valid JSON
+- Never return markdown
+- Never explain reasoning
+
+JSON FORMAT:
+
 {
-  "tool": "none"
+  "workflow": [
+    {
+      "step": 1,
+      "type": "tool",
+      "tool": "web_search",
+      "query": "latest AI news"
+    },
+    {
+      "step": 2,
+      "type": "ai_task",
+      "task": "summarize",
+      "language": "burmese"
+    }
+  ]
 }
 
-- Never explain reasoning.
-- Never return markdown.
-- Never return extra text.
+If no tools are needed:
+
+{
+  "workflow": [
+    {
+      "step": 1,
+      "type": "chat"
+    }
+  ]
+}
 """
 
 
 SUMMARY_PROMPT = """
 You are TeleOps-AI.
 
-Convert raw tool outputs into natural conversational replies.
+Convert raw outputs into human-friendly conversational replies.
 
 Rules:
 - Never expose raw JSON
-- Never expose internal system details
-- Keep responses concise
+- Never expose internal system logic
+- Keep replies concise
 - Reply in same language as user
-- Burmese user => Burmese response
-- English user => English response
+- Burmese => Burmese response
+- English => English response
 - Sound natural and human
 """
 
@@ -117,27 +155,27 @@ class AIService:
                 )
             )
 
-            tool_decision = (
-                await self.autonomous_tool_selection(
+            workflow = await (
+                self.generate_workflow(
                     message=message,
                     memory_context=memory_context
                 )
             )
 
-            selected_tool = (
-                tool_decision.get(
-                    "tool",
-                    "none"
+            workflow_steps = (
+                workflow.get(
+                    "workflow",
+                    []
                 )
             )
 
             logger.info(
-                "Autonomous tool "
-                "selection=%s",
-                selected_tool
+                "Workflow generated "
+                "steps=%s",
+                len(workflow_steps)
             )
 
-            if selected_tool == "none":
+            if not workflow_steps:
                 response = await (
                     self.handle_chat(
                         telegram_user_id,
@@ -159,17 +197,134 @@ class AIService:
                     "response": response
                 }
 
-            tool_result = await (
-                self.execute_autonomous_tool(
-                    tool_decision
-                )
+            first_step = (
+                workflow_steps[0]
             )
 
-            summarized_response = (
-                await self.summarize_tool_output(
+            if (
+                first_step.get(
+                    "type"
+                )
+                == "chat"
+            ):
+                response = await (
+                    self.handle_chat(
+                        telegram_user_id,
+                        message,
+                        memory_context
+                    )
+                )
+
+                await (
+                    self.store_conversation_pair(
+                        telegram_user_id,
+                        message,
+                        response
+                    )
+                )
+
+                return {
+                    "type": "chat",
+                    "response": response
+                }
+
+            workflow_context = ""
+
+            executed_steps = []
+
+            for step in workflow_steps:
+                step_type = (
+                    step.get(
+                        "type"
+                    )
+                )
+
+                logger.info(
+                    "Executing workflow "
+                    "step=%s type=%s",
+                    step.get("step"),
+                    step_type
+                )
+
+                try:
+                    if step_type == "tool":
+                        result = await (
+                            self.execute_tool_step(
+                                step
+                            )
+                        )
+
+                        workflow_context += (
+                            "\n\n"
+                            f"[Tool Result]\n"
+                            f"{result}"
+                        )
+
+                        executed_steps.append(
+                            {
+                                "step": (
+                                    step.get(
+                                        "step"
+                                    )
+                                ),
+                                "type": "tool",
+                                "result": result
+                            }
+                        )
+
+                    elif (
+                        step_type
+                        == "ai_task"
+                    ):
+                        result = await (
+                            self.execute_ai_task(
+                                original_message=message,
+                                workflow_context=(
+                                    workflow_context
+                                ),
+                                task_step=step
+                            )
+                        )
+
+                        workflow_context += (
+                            "\n\n"
+                            f"[AI Task Result]\n"
+                            f"{result}"
+                        )
+
+                        executed_steps.append(
+                            {
+                                "step": (
+                                    step.get(
+                                        "step"
+                                    )
+                                ),
+                                "type": "ai_task",
+                                "result": result
+                            }
+                        )
+
+                except Exception as exc:
+                    logger.exception(
+                        "Workflow step "
+                        "execution failed: %s",
+                        exc
+                    )
+
+                    workflow_context += (
+                        "\n\n"
+                        "[Step Failed]\n"
+                        "A workflow step "
+                        "failed but execution "
+                        "continued."
+                    )
+
+            final_response = await (
+                self.generate_final_response(
                     original_user_message=message,
-                    tool_name=selected_tool,
-                    raw_output=tool_result
+                    workflow_context=(
+                        workflow_context
+                    )
                 )
             )
 
@@ -177,19 +332,20 @@ class AIService:
                 self.store_conversation_pair(
                     telegram_user_id,
                     message,
-                    summarized_response
+                    final_response
                 )
             )
 
             return {
-                "type": "tool",
-                "tool": selected_tool,
-                "response": summarized_response
+                "type": "workflow",
+                "response": final_response,
+                "steps": executed_steps
             }
 
         except Exception as exc:
             logger.exception(
-                "AIService process failed: %s",
+                "AIService process "
+                "failed: %s",
                 exc
             )
 
@@ -212,27 +368,27 @@ class AIService:
                 "response": fallback_response
             }
 
-    async def autonomous_tool_selection(
+    async def generate_workflow(
         self,
         message: str,
         memory_context: list[
             dict[str, str]
         ]
     ) -> dict[str, Any]:
-        router_messages = [
+        messages = [
             {
                 "role": "system",
                 "content": (
-                    AGENT_ROUTER_PROMPT
+                    AGENT_WORKFLOW_PROMPT
                 )
             }
         ]
 
-        router_messages.extend(
+        messages.extend(
             memory_context[-10:]
         )
 
-        router_messages.append(
+        messages.append(
             {
                 "role": "user",
                 "content": message
@@ -241,13 +397,13 @@ class AIService:
 
         raw_response = await (
             self.provider.generate_response(
-                messages=router_messages,
+                messages=messages,
                 temperature=0.1
             )
         )
 
         logger.info(
-            "Autonomous router "
+            "Workflow planner "
             "response=%s",
             raw_response
         )
@@ -262,7 +418,7 @@ class AIService:
                 dict
             ):
                 raise ValueError(
-                    "Router response "
+                    "Workflow response "
                     "must be dict"
                 )
 
@@ -270,11 +426,16 @@ class AIService:
 
         except Exception:
             logger.exception(
-                "Router JSON parse failed"
+                "Workflow parse failed"
             )
 
             return {
-                "tool": "none"
+                "workflow": [
+                    {
+                        "step": 1,
+                        "type": "chat"
+                    }
+                ]
             }
 
     async def build_memory_context(
@@ -355,33 +516,32 @@ class AIService:
 
         return response
 
-    async def execute_autonomous_tool(
+    async def execute_tool_step(
         self,
-        tool_decision: dict[str, Any]
+        step: dict[str, Any]
     ) -> str:
         tool_name = (
-            tool_decision.get(
+            step.get(
                 "tool"
             )
         )
 
         logger.info(
-            "Executing autonomous "
-            "tool=%s",
+            "Executing tool=%s",
             tool_name
         )
 
         if tool_name == "web_search":
             return await (
                 self.execute_web_search(
-                    tool_decision
+                    step
                 )
             )
 
         if tool_name == "weather":
             return await (
                 self.execute_weather(
-                    tool_decision
+                    step
                 )
             )
 
@@ -391,13 +551,70 @@ class AIService:
             )
 
         return (
-            "No suitable tool "
-            "was selected."
+            "Unknown tool "
+            f"{tool_name}"
         )
+
+    async def execute_ai_task(
+        self,
+        original_message: str,
+        workflow_context: str,
+        task_step: dict[str, Any]
+    ) -> str:
+        task_name = (
+            task_step.get(
+                "task",
+                "summarize"
+            )
+        )
+
+        language = (
+            task_step.get(
+                "language",
+                "same"
+            )
+        )
+
+        logger.info(
+            "Executing AI task=%s",
+            task_name
+        )
+
+        task_prompt = [
+            {
+                "role": "system",
+                "content": (
+                    SUMMARY_PROMPT
+                )
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"Original User "
+                    f"Request:\n"
+                    f"{original_message}\n\n"
+                    f"Task Type:\n"
+                    f"{task_name}\n\n"
+                    f"Language:\n"
+                    f"{language}\n\n"
+                    f"Workflow Context:\n"
+                    f"{workflow_context}"
+                )
+            }
+        ]
+
+        result = await (
+            self.provider.generate_response(
+                messages=task_prompt,
+                temperature=0.4
+            )
+        )
+
+        return result
 
     async def execute_web_search(
         self,
-        tool_decision: dict[str, Any]
+        step: dict[str, Any]
     ) -> str:
         plugin = (
             plugin_loader.get_plugin(
@@ -412,7 +629,7 @@ class AIService:
             )
 
         query = (
-            tool_decision.get(
+            step.get(
                 "query",
                 ""
             )
@@ -437,7 +654,7 @@ class AIService:
 
     async def execute_weather(
         self,
-        tool_decision: dict[str, Any]
+        step: dict[str, Any]
     ) -> str:
         plugin = (
             plugin_loader.get_plugin(
@@ -452,7 +669,7 @@ class AIService:
             )
 
         city = (
-            tool_decision.get(
+            step.get(
                 "city",
                 ""
             )
@@ -531,11 +748,10 @@ class AIService:
             f"{os.getenv('AI_PROVIDER')}"
         )
 
-    async def summarize_tool_output(
+    async def generate_final_response(
         self,
         original_user_message: str,
-        tool_name: str,
-        raw_output: str
+        workflow_context: str
     ) -> str:
         messages = [
             {
@@ -545,12 +761,13 @@ class AIService:
             {
                 "role": "user",
                 "content": (
-                    f"User Message:\n"
+                    f"Original User "
+                    f"Request:\n"
                     f"{original_user_message}\n\n"
-                    f"Tool Used:\n"
-                    f"{tool_name}\n\n"
-                    f"Raw Tool Output:\n"
-                    f"{raw_output}"
+                    f"Workflow Results:\n"
+                    f"{workflow_context}\n\n"
+                    f"Generate the final "
+                    f"human-friendly reply."
                 )
             }
         ]
@@ -559,7 +776,7 @@ class AIService:
             response = await (
                 self.provider.generate_response(
                     messages=messages,
-                    temperature=0.4
+                    temperature=0.5
                 )
             )
 
@@ -567,15 +784,16 @@ class AIService:
 
         except Exception as exc:
             logger.exception(
-                "Summary generation "
-                "failed: %s",
+                "Final response "
+                "generation failed: %s",
                 exc
             )
 
             return (
-                "⚠️ Sorry, I couldn't "
-                "summarize the result "
-                "properly."
+                "⚠️ I completed part "
+                "of the workflow, but "
+                "couldn't generate the "
+                "final response properly."
             )
 
     async def store_conversation_pair(
