@@ -58,3 +58,5 @@ rich==13.8.1
 
 # Typing
 typing-extensions==4.12.2
+
+psutil
