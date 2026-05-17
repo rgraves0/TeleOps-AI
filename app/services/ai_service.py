@@ -22,6 +22,12 @@ from app.database.repositories.chat_memory import (
 from app.plugins.loader import (
     plugin_loader,
 )
+from app.services.inbox_service import (
+    inbox_service,
+)
+from app.services.plugin_service import (
+    plugin_service,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -29,11 +35,11 @@ logger = logging.getLogger(__name__)
 AGENT_WORKFLOW_PROMPT = """
 You are TeleOps-AI Autonomous Agent Planner.
 
-Your job:
-- Analyze the user's request
+Your responsibilities:
+- Analyze user requests
 - Decide whether tools are needed
-- Create a multi-step execution workflow
-- Tools can be chained together sequentially
+- Build multi-step workflows
+- Chain tools and AI tasks together
 
 AVAILABLE TOOLS:
 
@@ -42,7 +48,8 @@ Purpose:
 - Search latest news
 - Search internet information
 - Search current events
-Parameters:
+
+JSON:
 {
   "tool": "web_search",
   "query": "search query"
@@ -50,11 +57,12 @@ Parameters:
 
 2. weather
 Purpose:
-- Weather information
-- Forecast
+- Weather forecast
 - Rain
+- Climate
 - Temperature
-Parameters:
+
+JSON:
 {
   "tool": "weather",
   "city": "city name"
@@ -65,31 +73,35 @@ Purpose:
 - CPU usage
 - RAM usage
 - System health
-Parameters:
+
+JSON:
 {
   "tool": "system_status"
+}
+
+4. email_summary
+Purpose:
+- Check unread emails
+- Summarize emails
+- Detect important emails
+
+JSON:
+{
+  "tool": "email_summary"
 }
 
 AVAILABLE AI TASKS:
 
 1. summarize
-Purpose:
-- Summarize previous tool outputs
-
 2. translate
-Purpose:
-- Translate previous outputs
-
 3. explain
-Purpose:
-- Explain results naturally
 
-WORKFLOW RULES:
+RULES:
 - Return ONLY valid JSON
 - Never return markdown
 - Never explain reasoning
 
-JSON FORMAT:
+WORKFLOW FORMAT:
 
 {
   "workflow": [
@@ -108,7 +120,7 @@ JSON FORMAT:
   ]
 }
 
-If no tools are needed:
+If casual conversation only:
 
 {
   "workflow": [
@@ -134,6 +146,27 @@ Rules:
 - Burmese => Burmese response
 - English => English response
 - Sound natural and human
+"""
+
+
+EMAIL_SUMMARY_PROMPT = """
+You are TeleOps-AI Email Intelligence Assistant.
+
+Your job:
+- Read raw email contents
+- Summarize unread emails clearly
+- Mention:
+  - sender
+  - subject
+  - key important information
+
+Rules:
+- Keep summary concise
+- Group similar emails
+- Highlight urgent emails
+- Reply in same language as user
+- Never expose raw MIME or HTML
+- Make summaries conversational
 """
 
 
@@ -250,7 +283,10 @@ class AIService:
                     if step_type == "tool":
                         result = await (
                             self.execute_tool_step(
-                                step
+                                telegram_user_id=(
+                                    telegram_user_id
+                                ),
+                                step=step
                             )
                         )
 
@@ -268,6 +304,11 @@ class AIService:
                                     )
                                 ),
                                 "type": "tool",
+                                "tool": (
+                                    step.get(
+                                        "tool"
+                                    )
+                                ),
                                 "result": result
                             }
                         )
@@ -314,9 +355,8 @@ class AIService:
                     workflow_context += (
                         "\n\n"
                         "[Step Failed]\n"
-                        "A workflow step "
-                        "failed but execution "
-                        "continued."
+                        "A workflow step failed "
+                        "but execution continued."
                     )
 
             final_response = await (
@@ -344,8 +384,7 @@ class AIService:
 
         except Exception as exc:
             logger.exception(
-                "AIService process "
-                "failed: %s",
+                "AIService process failed: %s",
                 exc
             )
 
@@ -454,16 +493,9 @@ class AIService:
             )
         )
 
-        messages: list[
-            dict[str, str]
-        ] = []
+        messages = []
 
         for item in history:
-            role = item.get(
-                "role",
-                "user"
-            )
-
             content = item.get(
                 "content",
                 ""
@@ -474,7 +506,10 @@ class AIService:
 
             messages.append(
                 {
-                    "role": role,
+                    "role": item.get(
+                        "role",
+                        "user"
+                    ),
                     "content": content
                 }
             )
@@ -518,6 +553,7 @@ class AIService:
 
     async def execute_tool_step(
         self,
+        telegram_user_id: int,
         step: dict[str, Any]
     ) -> str:
         tool_name = (
@@ -550,10 +586,173 @@ class AIService:
                 self.execute_system_status()
             )
 
+        if tool_name in (
+            "mail_check",
+            "email_summary"
+        ):
+            return await (
+                self.execute_email_summary(
+                    telegram_user_id
+                )
+            )
+
         return (
             "Unknown tool "
             f"{tool_name}"
         )
+
+    async def execute_email_summary(
+        self,
+        telegram_user_id: int
+    ) -> str:
+        try:
+            logger.info(
+                "Loading mail settings "
+                "telegram_user_id=%s",
+                telegram_user_id
+            )
+
+            mail_settings = await (
+                plugin_service
+                .load_mail_settings(
+                    telegram_user_id
+                )
+            )
+
+            if not mail_settings:
+                return (
+                    "Mail settings are "
+                    "not configured."
+                )
+
+            inbox_id = (
+                mail_settings.get(
+                    "inbox_id"
+                )
+            )
+
+            host = (
+                mail_settings.get(
+                    "host"
+                )
+            )
+
+            email_address = (
+                mail_settings.get(
+                    "email"
+                )
+            )
+
+            password = (
+                mail_settings.get(
+                    "password"
+                )
+            )
+
+            if not all([
+                inbox_id,
+                host,
+                email_address,
+                password
+            ]):
+                return (
+                    "Incomplete mail "
+                    "credentials detected."
+                )
+
+            logger.info(
+                "Fetching unread emails "
+                "telegram_user_id=%s",
+                telegram_user_id
+            )
+
+            emails = await (
+                inbox_service.fetch_emails(
+                    telegram_user_id=(
+                        telegram_user_id
+                    ),
+                    inbox_id=inbox_id,
+                    host=host,
+                    email=email_address,
+                    password=password,
+                    unread_only=True,
+                    limit=10
+                )
+            )
+
+            if not emails:
+                return (
+                    "No unread emails "
+                    "were found."
+                )
+
+            email_text = ""
+
+            for index, email_data in enumerate(
+                emails,
+                start=1
+            ):
+                sender = (
+                    email_data.get(
+                        "from",
+                        "Unknown Sender"
+                    )
+                )
+
+                subject = (
+                    email_data.get(
+                        "subject",
+                        "No Subject"
+                    )
+                )
+
+                body = (
+                    email_data.get(
+                        "body",
+                        ""
+                    )
+                )
+
+                email_text += (
+                    f"\n\n"
+                    f"Email {index}\n"
+                    f"From: {sender}\n"
+                    f"Subject: {subject}\n"
+                    f"Body: {body[:2500]}"
+                )
+
+            summary_messages = [
+                {
+                    "role": "system",
+                    "content": (
+                        EMAIL_SUMMARY_PROMPT
+                    )
+                },
+                {
+                    "role": "user",
+                    "content": email_text
+                }
+            ]
+
+            summarized = await (
+                self.provider.generate_response(
+                    messages=summary_messages,
+                    temperature=0.4
+                )
+            )
+
+            return summarized
+
+        except Exception as exc:
+            logger.exception(
+                "Email summary failed: %s",
+                exc
+            )
+
+            return (
+                "Unable to check emails "
+                "right now."
+            )
 
     async def execute_ai_task(
         self,
@@ -590,8 +789,7 @@ class AIService:
             {
                 "role": "user",
                 "content": (
-                    f"Original User "
-                    f"Request:\n"
+                    f"Original User Request:\n"
                     f"{original_message}\n\n"
                     f"Task Type:\n"
                     f"{task_name}\n\n"
@@ -641,11 +839,6 @@ class AIService:
                 "was empty."
             )
 
-        logger.info(
-            "Web search query=%s",
-            query
-        )
-
         result = await plugin.search(
             query=query
         )
@@ -680,11 +873,6 @@ class AIService:
                 "City parameter "
                 "was empty."
             )
-
-        logger.info(
-            "Weather city=%s",
-            city
-        )
 
         result = await (
             plugin.get_weather(
@@ -761,12 +949,11 @@ class AIService:
             {
                 "role": "user",
                 "content": (
-                    f"Original User "
-                    f"Request:\n"
+                    f"Original User Request:\n"
                     f"{original_user_message}\n\n"
                     f"Workflow Results:\n"
                     f"{workflow_context}\n\n"
-                    f"Generate the final "
+                    f"Generate final "
                     f"human-friendly reply."
                 )
             }
@@ -784,8 +971,7 @@ class AIService:
 
         except Exception as exc:
             logger.exception(
-                "Final response "
-                "generation failed: %s",
+                "Final response failed: %s",
                 exc
             )
 
@@ -793,7 +979,7 @@ class AIService:
                 "⚠️ I completed part "
                 "of the workflow, but "
                 "couldn't generate the "
-                "final response properly."
+                "final response."
             )
 
     async def store_conversation_pair(
@@ -851,8 +1037,7 @@ class AIService:
 
         except Exception:
             logger.exception(
-                "Failed to clear "
-                "memory"
+                "Failed to clear memory"
             )
 
     async def generate_friendly_error(
@@ -869,8 +1054,7 @@ class AIService:
                 "content": (
                     "Generate a friendly "
                     "AI assistant error "
-                    "reply for this "
-                    f"user message:\n"
+                    f"reply for:\n"
                     f"{user_message}"
                 )
             }
