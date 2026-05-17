@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from telegram.ext import (
     Application,
+    CommandHandler,
 )
 
 from app.interfaces.telegram.commands.admin import (
@@ -17,9 +18,6 @@ from app.interfaces.telegram.commands.system import (
     help_command,
     start_command,
     status_command,
-)
-from telegram.ext import (
-    CommandHandler,
 )
 
 
@@ -47,7 +45,7 @@ def register_handlers(
         )
     )
 
-    register_admin_handlers(
+    register_ai_chat_handlers(
         application
     )
 
@@ -55,6 +53,6 @@ def register_handlers(
         application
     )
 
-    register_ai_chat_handlers(
+    register_admin_handlers(
         application
     )
