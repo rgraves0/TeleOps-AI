@@ -3,16 +3,13 @@ from __future__ import annotations
 import gc
 import json
 import logging
-import os
 import platform
 from datetime import datetime
 from typing import Any
 
 import psutil
 
-from app.ai.prompts import (
-    SYSTEM_PROMPT,
-)
+from app.ai.prompts import SYSTEM_PROMPT
 from app.ai.provider import (
     AIProvider,
     AIProviderException,
@@ -26,9 +23,6 @@ from app.database.repositories.rclone_meta import (
 from app.plugins.loader import (
     plugin_loader,
 )
-# =====================================================================
-# FIXED: Imported 'InboxService' class instead of lowercase 'inbox_service'
-# =====================================================================
 from app.services.inbox_service import (
     InboxService,
 )
@@ -38,6 +32,12 @@ from app.services.plugin_service import (
 
 logger = logging.getLogger(__name__)
 
+plugin_service = PluginService()
+
+
+# =========================================================
+# WORKFLOW ROUTER
+# =========================================================
 
 WORKFLOW_ROUTER_PROMPT = """
 You are TeleOps-AI Autonomous Workflow Router.
@@ -45,7 +45,7 @@ You are TeleOps-AI Autonomous Workflow Router.
 Your job:
 - Analyze user requests
 - Decide whether tools are required
-- Build lightweight execution workflows
+- Build lightweight workflows
 - Avoid unnecessary tool usage
 - Optimize for low-memory environments
 
@@ -114,8 +114,8 @@ WORKFLOW FORMAT:
     {
       "step": 1,
       "type": "tool",
-      "tool": "web_search",
-      "query": "latest AI news"
+      "tool": "weather",
+      "city": "Bangkok"
     },
     {
       "step": 2,
@@ -135,6 +135,12 @@ CASUAL CHAT FORMAT:
   ]
 }
 
+LANGUAGE RULES:
+- Preserve the user's original language
+- English input => English workflow
+- Burmese input => Burmese workflow
+- Never force Burmese unnecessarily
+
 RULES:
 - Return ONLY valid JSON
 - Never return markdown
@@ -142,17 +148,27 @@ RULES:
 """
 
 
+# =========================================================
+# SUMMARY PROMPTS
+# =========================================================
+
 SUMMARY_PROMPT = """
 You are TeleOps-AI.
 
 Convert raw tool outputs into clean conversational replies.
 
-Rules:
+LANGUAGE RULES:
+- Detect the user's language automatically.
+- English input => English output.
+- Burmese input => Burmese Unicode output.
+- Never translate unless requested.
+- Never mix Burmese and English unnecessarily.
+- Never use Zawgyi encoding.
+- Keep Burmese Unicode clean.
+
+GENERAL RULES:
 - Be concise
 - Be human-friendly
-- Reply in user's language
-- Burmese user => Burmese reply
-- English user => English reply
 - Never expose raw JSON
 - Never expose raw database rows
 - Never expose secrets or tokens
@@ -169,7 +185,12 @@ Mention:
 - Subject
 - Important information
 
-Rules:
+LANGUAGE RULES:
+- Match the user's language automatically.
+- English user => English reply.
+- Burmese user => Burmese Unicode reply.
+
+RULES:
 - Keep concise
 - Never expose raw HTML
 - Never expose MIME structures
@@ -188,15 +209,26 @@ Mention:
 - Folder path
 - Approximate file size
 
-Rules:
+LANGUAGE RULES:
+- Match the user's language automatically.
+- English user => English reply.
+- Burmese user => Burmese Unicode reply.
+
+RULES:
 - Organize clearly
 - Never expose raw SQL rows
 - Reply naturally
 """
 
 
+# =========================================================
+# AI SERVICE
+# =========================================================
+
 class AIService:
+
     def __init__(self):
+
         self.provider = AIProvider()
 
         self.max_history_messages = 20
@@ -206,10 +238,7 @@ class AIService:
         self.rclone_repository = (
             RcloneMetaRepository()
         )
-        
-        # =====================================================================
-        # FIXED: Instantiated the InboxService class correctly
-        # =====================================================================
+
         self.inbox_service = InboxService()
 
     async def process_user_message(
@@ -217,6 +246,7 @@ class AIService:
         telegram_user_id: int,
         message: str
     ) -> dict[str, Any]:
+
         memory_context = []
 
         workflow = {}
@@ -226,6 +256,7 @@ class AIService:
         executed_steps = []
 
         try:
+
             memory_context = (
                 await self.get_memory_context(
                     telegram_user_id
@@ -247,21 +278,18 @@ class AIService:
             )
 
             if not workflow_steps:
+
                 response = await (
                     self.generate_chat_response(
-                        memory_context=(
-                            memory_context
-                        ),
+                        memory_context=memory_context,
                         message=message
                     )
                 )
 
-                await (
-                    self.store_conversation(
-                        telegram_user_id,
-                        message,
-                        response
-                    )
+                await self.store_conversation(
+                    telegram_user_id,
+                    message,
+                    response
                 )
 
                 return {
@@ -272,26 +300,21 @@ class AIService:
             first_step = workflow_steps[0]
 
             if (
-                first_step.get(
-                    "type"
-                )
+                first_step.get("type")
                 == "chat"
             ):
+
                 response = await (
                     self.generate_chat_response(
-                        memory_context=(
-                            memory_context
-                        ),
+                        memory_context=memory_context,
                         message=message
                     )
                 )
 
-                await (
-                    self.store_conversation(
-                        telegram_user_id,
-                        message,
-                        response
-                    )
+                await self.store_conversation(
+                    telegram_user_id,
+                    message,
+                    response
                 )
 
                 return {
@@ -300,16 +323,14 @@ class AIService:
                 }
 
             for step in workflow_steps:
+
                 try:
+
                     result = await (
                         self.execute_workflow_step(
-                            telegram_user_id=(
-                                telegram_user_id
-                            ),
+                            telegram_user_id=telegram_user_id,
                             step=step,
-                            workflow_context=(
-                                workflow_context
-                            )
+                            workflow_context=workflow_context
                         )
                     )
 
@@ -321,20 +342,13 @@ class AIService:
 
                     executed_steps.append(
                         {
-                            "step": (
-                                step.get(
-                                    "step"
-                                )
-                            ),
-                            "type": (
-                                step.get(
-                                    "type"
-                                )
-                            )
+                            "step": step.get("step"),
+                            "type": step.get("type")
                         }
                     )
 
                 except Exception as exc:
+
                     logger.exception(
                         "Workflow step failed: %s",
                         exc
@@ -342,26 +356,21 @@ class AIService:
 
                     workflow_context += (
                         "\n\n"
-                        "One workflow step "
-                        "failed but execution "
-                        "continued safely."
+                        "One workflow step failed "
+                        "but execution continued safely."
                     )
 
             final_response = await (
                 self.generate_final_response(
                     original_message=message,
-                    workflow_context=(
-                        workflow_context
-                    )
+                    workflow_context=workflow_context
                 )
             )
 
-            await (
-                self.store_conversation(
-                    telegram_user_id,
-                    message,
-                    final_response
-                )
+            await self.store_conversation(
+                telegram_user_id,
+                message,
+                final_response
             )
 
             return {
@@ -371,6 +380,7 @@ class AIService:
             }
 
         except Exception as exc:
+
             logger.exception(
                 "AIService failed: %s",
                 exc
@@ -382,12 +392,10 @@ class AIService:
                 )
             )
 
-            await (
-                self.store_conversation(
-                    telegram_user_id,
-                    message,
-                    fallback
-                )
+            await self.store_conversation(
+                telegram_user_id,
+                message,
+                fallback
             )
 
             return {
@@ -396,6 +404,7 @@ class AIService:
             }
 
         finally:
+
             del memory_context
             del workflow
             del workflow_context
@@ -410,12 +419,11 @@ class AIService:
             dict[str, str]
         ]
     ) -> dict[str, Any]:
+
         router_messages = [
             {
                 "role": "system",
-                "content": (
-                    WORKFLOW_ROUTER_PROMPT
-                )
+                "content": WORKFLOW_ROUTER_PROMPT
             }
         ]
 
@@ -443,6 +451,7 @@ class AIService:
         )
 
         try:
+
             parsed = json.loads(
                 raw_response
             )
@@ -458,6 +467,7 @@ class AIService:
             return parsed
 
         except Exception:
+
             logger.exception(
                 "Workflow parse failed"
             )
@@ -477,18 +487,15 @@ class AIService:
         step: dict[str, Any],
         workflow_context: str
     ) -> str:
+
         step_type = (
-            step.get(
-                "type"
-            )
+            step.get("type")
         )
 
         if step_type == "tool":
             return await (
                 self.execute_tool(
-                    telegram_user_id=(
-                        telegram_user_id
-                    ),
+                    telegram_user_id=telegram_user_id,
                     step=step
                 )
             )
@@ -507,10 +514,9 @@ class AIService:
         telegram_user_id: int,
         step: dict[str, Any]
     ) -> str:
+
         tool_name = (
-            step.get(
-                "tool"
-            )
+            step.get("tool")
         )
 
         if tool_name == "web_search":
@@ -552,15 +558,13 @@ class AIService:
                 )
             )
 
-        return (
-            f"Unknown tool: "
-            f"{tool_name}"
-        )
+        return f"Unknown tool: {tool_name}"
 
     async def execute_web_search(
         self,
         step: dict[str, Any]
     ) -> str:
+
         query = (
             step.get(
                 "query",
@@ -569,9 +573,7 @@ class AIService:
         )
 
         if not query:
-            return (
-                "Search query missing."
-            )
+            return "Search query missing."
 
         plugin = (
             plugin_loader.get_plugin(
@@ -580,10 +582,7 @@ class AIService:
         )
 
         if plugin is None:
-            return (
-                "Web search plugin "
-                "not available."
-            )
+            return "Web search plugin not available."
 
         result = await plugin.search(
             query=query
@@ -595,6 +594,7 @@ class AIService:
         self,
         step: dict[str, Any]
     ) -> str:
+
         city = (
             step.get(
                 "city",
@@ -603,9 +603,7 @@ class AIService:
         )
 
         if not city:
-            return (
-                "City parameter missing."
-            )
+            return "City parameter missing."
 
         plugin = (
             plugin_loader.get_plugin(
@@ -614,10 +612,7 @@ class AIService:
         )
 
         if plugin is None:
-            return (
-                "Weather plugin "
-                "not available."
-            )
+            return "Weather plugin not available."
 
         result = await (
             plugin.get_weather(
@@ -630,6 +625,7 @@ class AIService:
     async def execute_system_status(
         self
     ) -> str:
+
         memory = (
             psutil.virtual_memory()
         )
@@ -654,69 +650,40 @@ class AIService:
 
         return (
             f"System Status\n\n"
-            f"Platform: "
-            f"{platform.system()} "
-            f"{platform.release()}\n"
-            f"CPU Usage: "
-            f"{cpu}%\n"
-            f"RAM Usage: "
-            f"{memory.percent}%\n"
-            f"Disk Usage: "
-            f"{disk.percent}%\n"
-            f"Python: "
-            f"{platform.python_version()}\n"
-            f"Plugins: "
-            f"{', '.join(enabled_plugins)}\n"
-            f"Time: "
-            f"{datetime.utcnow()}"
+            f"Platform: {platform.system()} {platform.release()}\n"
+            f"CPU Usage: {cpu}%\n"
+            f"RAM Usage: {memory.percent}%\n"
+            f"Disk Usage: {disk.percent}%\n"
+            f"Python: {platform.python_version()}\n"
+            f"Plugins: {', '.join(enabled_plugins)}\n"
+            f"Time: {datetime.utcnow()}"
         )
 
     async def execute_email_summary(
         self,
         telegram_user_id: int
     ) -> str:
+
         try:
+
             settings = await (
-                plugin_service
-                .load_mail_settings(
+                plugin_service.load_mail_settings(
                     telegram_user_id
                 )
             )
 
             if not settings:
                 return (
-                    "Mail settings are "
-                    "not configured."
+                    "Mail settings are not configured."
                 )
 
-            # =====================================================================
-            # FIXED: Called fetch_emails via self.inbox_service instance
-            # =====================================================================
             emails = await (
                 self.inbox_service.fetch_emails(
-                    telegram_user_id=(
-                        telegram_user_id
-                    ),
-                    inbox_id=(
-                        settings.get(
-                            "inbox_id"
-                        )
-                    ),
-                    host=(
-                        settings.get(
-                            "host"
-                        )
-                    ),
-                    email=(
-                        settings.get(
-                            "email"
-                        )
-                    ),
-                    password=(
-                        settings.get(
-                            "password"
-                        )
-                    ),
+                    telegram_user_id=telegram_user_id,
+                    inbox_id=settings.get("inbox_id"),
+                    host=settings.get("host"),
+                    email=settings.get("email"),
+                    password=settings.get("password"),
                     unread_only=True,
                     limit=10
                 )
@@ -724,8 +691,7 @@ class AIService:
 
             if not emails:
                 return (
-                    "No unread emails "
-                    "were found."
+                    "No unread emails were found."
                 )
 
             raw_email_text = ""
@@ -734,6 +700,7 @@ class AIService:
                 emails,
                 start=1
             ):
+
                 sender = (
                     item.get(
                         "from",
@@ -770,9 +737,7 @@ class AIService:
             summary_messages = [
                 {
                     "role": "system",
-                    "content": (
-                        EMAIL_SUMMARY_PROMPT
-                    )
+                    "content": EMAIL_SUMMARY_PROMPT
                 },
                 {
                     "role": "user",
@@ -787,30 +752,26 @@ class AIService:
                 )
             )
 
-            del emails
-            del raw_email_text
-            del summary_messages
-
-            gc.collect()
-
             return summarized
 
         except Exception as exc:
+
             logger.exception(
                 "Email summary failed: %s",
                 exc
             )
 
             return (
-                "Unable to fetch emails "
-                "right now."
+                "Unable to fetch emails right now."
             )
 
     async def execute_rclone_search(
         self,
         step: dict[str, Any]
     ) -> str:
+
         try:
+
             keyword = (
                 step.get(
                     "keyword",
@@ -820,21 +781,18 @@ class AIService:
 
             if not keyword:
                 return (
-                    "Storage search keyword "
-                    "missing."
+                    "Storage search keyword missing."
                 )
 
             results = await (
-                self.rclone_repository
-                .search_files(
+                self.rclone_repository.search_files(
                     keyword=keyword
                 )
             )
 
             if not results:
                 return (
-                    "No matching files "
-                    "were found."
+                    "No matching files were found."
                 )
 
             raw_result_text = ""
@@ -843,25 +801,20 @@ class AIService:
                 results,
                 start=1
             ):
+
                 raw_result_text += (
                     f"\n\n"
                     f"Result {index}\n"
-                    f"Remote: "
-                    f"{item.get('remote_name')}\n"
-                    f"File: "
-                    f"{item.get('file_name')}\n"
-                    f"Path: "
-                    f"{item.get('file_path')}\n"
-                    f"Size: "
-                    f"{item.get('file_size')}"
+                    f"Remote: {item.get('remote_name')}\n"
+                    f"File: {item.get('file_name')}\n"
+                    f"Path: {item.get('file_path')}\n"
+                    f"Size: {item.get('file_size')}"
                 )
 
             messages = [
                 {
                     "role": "system",
-                    "content": (
-                        RCLONE_SUMMARY_PROMPT
-                    )
+                    "content": RCLONE_SUMMARY_PROMPT
                 },
                 {
                     "role": "user",
@@ -876,29 +829,24 @@ class AIService:
                 )
             )
 
-            del results
-            del raw_result_text
-            del messages
-
-            gc.collect()
-
             return summarized
 
         except Exception as exc:
+
             logger.exception(
                 "Rclone search failed: %s",
                 exc
             )
 
             return (
-                "Unable to search "
-                "cloud storage right now."
+                "Unable to search cloud storage right now."
             )
 
     async def summarize_context(
         self,
         workflow_context: str
     ) -> str:
+
         messages = [
             {
                 "role": "system",
@@ -924,6 +872,7 @@ class AIService:
         ],
         message: str
     ) -> str:
+
         messages = [
             {
                 "role": "system",
@@ -954,6 +903,7 @@ class AIService:
         original_message: str,
         workflow_context: str
     ) -> str:
+
         messages = [
             {
                 "role": "system",
@@ -961,12 +911,18 @@ class AIService:
             },
             {
                 "role": "user",
-                "content": (
-                    f"Original Request:\n"
-                    f"{original_message}\n\n"
-                    f"Workflow Results:\n"
-                    f"{workflow_context}"
-                )
+                "content": f'''
+Original User Message:
+{original_message}
+
+IMPORTANT:
+- Reply in the SAME language as the user.
+- English input => English output.
+- Burmese input => Burmese Unicode output.
+
+Workflow Results:
+{workflow_context}
+'''
             }
         ]
 
@@ -981,21 +937,19 @@ class AIService:
         self,
         telegram_user_id: int
     ) -> list[dict[str, str]]:
+
         history = await (
             chat_memory_repository
             .get_recent_history(
-                telegram_user_id=(
-                    telegram_user_id
-                ),
-                limit=(
-                    self.max_history_messages
-                )
+                telegram_user_id=telegram_user_id,
+                limit=self.max_history_messages
             )
         )
 
         context_messages = []
 
         for item in history:
+
             content = (
                 item.get(
                     "content",
@@ -1024,48 +978,46 @@ class AIService:
         user_message: str,
         assistant_message: str
     ) -> None:
+
         try:
+
             await (
-                chat_memory_repository
-                .store_message(
-                    telegram_user_id=(
-                        telegram_user_id
-                    ),
+                chat_memory_repository.store_message(
+                    telegram_user_id=telegram_user_id,
                     role="user",
                     content=user_message
                 )
             )
 
             await (
-                chat_memory_repository
-                .store_message(
-                    telegram_user_id=(
-                        telegram_user_id
-                    ),
+                chat_memory_repository.store_message(
+                    telegram_user_id=telegram_user_id,
                     role="assistant",
                     content=assistant_message
                 )
             )
 
         except Exception:
+
             logger.exception(
-                "Failed to store "
-                "conversation"
+                "Failed to store conversation"
             )
 
     async def clear_memory(
         self,
         telegram_user_id: int
     ) -> None:
+
         try:
+
             await (
-                chat_memory_repository
-                .clear_history(
+                chat_memory_repository.clear_history(
                     telegram_user_id
                 )
             )
 
         except Exception:
+
             logger.exception(
                 "Failed to clear memory"
             )
@@ -1074,7 +1026,9 @@ class AIService:
         self,
         user_message: str
     ) -> str:
+
         try:
+
             messages = [
                 {
                     "role": "system",
@@ -1098,16 +1052,18 @@ class AIService:
             )
 
         except Exception:
+
             return (
-                "⚠️ Sorry, something "
-                "went wrong while "
-                "processing your request."
+                "⚠️ Sorry, something went wrong "
+                "while processing your request."
             )
 
     async def health_check(
         self
     ) -> bool:
+
         try:
+
             response = await (
                 self.provider.generate_response(
                     messages=[
@@ -1122,9 +1078,9 @@ class AIService:
             return bool(response)
 
         except AIProviderException:
+
             logger.exception(
-                "AI provider health "
-                "check failed"
+                "AI provider health check failed"
             )
 
             return False
