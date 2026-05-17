@@ -47,7 +47,10 @@ class TeleOpsApplication:
         await self.rclone_repository.initialize_table()
 
         logger.info("Loading plugins...")
-        await plugin_loader.load_all_plugins()
+        # =====================================================================
+        # FIXED: Removed 'await' because load_all_plugins() is a synchronous function
+        # =====================================================================
+        plugin_loader.load_all_plugins()
 
         logger.info("Attaching Telegram application to scheduler...")
         await scheduler_service.attach_application(self.bot.application)
