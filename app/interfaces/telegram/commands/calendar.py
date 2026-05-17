@@ -1,16 +1,22 @@
 from __future__ import annotations
 
+import os
 from datetime import datetime
 
+import pytz
+from dotenv import load_dotenv
 from telegram import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     Update,
 )
 from telegram.ext import (
+    Application,
     CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
+    MessageHandler,
+    filters,
 )
 
 from app.database.repositories.users import (
@@ -18,6 +24,17 @@ from app.database.repositories.users import (
 )
 from app.services.reminder_service import (
     ReminderService,
+)
+
+load_dotenv()
+
+TIMEZONE = os.getenv(
+    "TIMEZONE",
+    "Asia/Bangkok"
+)
+
+timezone = pytz.timezone(
+    TIMEZONE
 )
 
 user_repository = UserRepository()
@@ -34,20 +51,20 @@ async def calendar_command(
     keyboard = [
         [
             InlineKeyboardButton(
-                "➕ Add Event",
+                text="➕ Add Event",
                 callback_data="calendar_add"
             )
         ],
         [
             InlineKeyboardButton(
-                "📅 List Events",
+                text="📅 List Events",
                 callback_data="calendar_list"
             )
         ]
     ]
 
     await update.effective_message.reply_text(
-        "📆 Calendar Menu",
+        text="📆 Calendar Menu",
         reply_markup=InlineKeyboardMarkup(
             keyboard
         )
@@ -78,6 +95,10 @@ async def calendar_callback_handler(
     )
 
     if user is None:
+        await query.edit_message_text(
+            "❌ User not found"
+        )
+
         return
 
     if query.data == "calendar_add":
@@ -87,8 +108,9 @@ async def calendar_callback_handler(
 
         await query.edit_message_text(
             (
-                "📝 Send event in format:\n\n"
-                "title | YYYY-MM-DD HH:MM | description"
+                "📝 Send event using format:\n\n"
+                "title | YYYY-MM-DD HH:MM | description\n\n"
+                f"Timezone: {TIMEZONE}"
             )
         )
 
@@ -104,7 +126,7 @@ async def calendar_callback_handler(
 
         if not reminders:
             await query.edit_message_text(
-                "No events found."
+                "📭 No events found"
             )
 
             return
@@ -114,17 +136,21 @@ async def calendar_callback_handler(
         lines = []
 
         for reminder in reminders:
+            remind_at = (
+                reminder["remind_at"]
+            )
+
             lines.append(
                 (
-                    f"• {reminder['title']}\n"
-                    f"⏰ {reminder['remind_at']}"
+                    f"📌 {reminder['title']}\n"
+                    f"⏰ {remind_at}"
                 )
             )
 
             keyboard.append([
                 InlineKeyboardButton(
                     text=(
-                        f"Delete "
+                        f"🗑 Delete "
                         f"{reminder['id']}"
                     ),
                     callback_data=(
@@ -135,7 +161,7 @@ async def calendar_callback_handler(
             ])
 
         await query.edit_message_text(
-            "\n\n".join(lines),
+            text="\n\n".join(lines),
             reply_markup=InlineKeyboardMarkup(
                 keyboard
             )
@@ -154,10 +180,24 @@ async def create_event_message_handler(
     if not update.effective_message:
         return
 
-    telegram_user = update.effective_user
-
-    if telegram_user is None:
+    if not update.effective_user:
         return
+
+    text = (
+        update.effective_message.text
+    )
+
+    if text is None:
+        return
+
+    user_message = text.strip()
+
+    if not user_message:
+        return
+
+    telegram_user = (
+        update.effective_user
+    )
 
     user = (
         await user_repository
@@ -167,36 +207,71 @@ async def create_event_message_handler(
     )
 
     if user is None:
-        return
+        await update.effective_message.reply_text(
+            "❌ User not found"
+        )
 
-    text = (
-        update.effective_message.text
-        .strip()
-    )
+        return
 
     parts = [
         part.strip()
-        for part in text.split("|")
+        for part in user_message.split("|")
     ]
 
     if len(parts) < 2:
         await update.effective_message.reply_text(
-            "Invalid format."
+            (
+                "❌ Invalid format\n\n"
+                "Example:\n"
+                "Meeting | 2026-05-18 14:00 | Team sync"
+            )
         )
 
         return
 
     title = parts[0]
 
-    event_time = datetime.strptime(
-        parts[1],
-        "%Y-%m-%d %H:%M"
-    )
-
     description = ""
 
     if len(parts) >= 3:
         description = parts[2]
+
+    try:
+        naive_datetime = datetime.strptime(
+            parts[1],
+            "%Y-%m-%d %H:%M"
+        )
+
+        localized_datetime = (
+            timezone.localize(
+                naive_datetime
+            )
+        )
+
+    except ValueError:
+        await update.effective_message.reply_text(
+            (
+                "❌ Invalid date/time format\n\n"
+                "Use:\n"
+                "YYYY-MM-DD HH:MM"
+            )
+        )
+
+        return
+
+    current_time = datetime.now(
+        timezone
+    )
+
+    if localized_datetime <= current_time:
+        await update.effective_message.reply_text(
+            (
+                "❌ Event time must be "
+                "in the future"
+            )
+        )
+
+        return
 
     reminder_id = (
         await reminder_service
@@ -204,7 +279,7 @@ async def create_event_message_handler(
             user_id=user["id"],
             title=title,
             description=description,
-            remind_at=event_time
+            remind_at=localized_datetime
         )
     )
 
@@ -212,11 +287,20 @@ async def create_event_message_handler(
         "calendar_create_mode"
     ] = False
 
+    formatted_time = (
+        localized_datetime.strftime(
+            "%Y-%m-%d %H:%M %Z"
+        )
+    )
+
     await update.effective_message.reply_text(
         (
-            f"✅ Event created\n\n"
-            f"ID: {reminder_id}\n"
-            f"Title: {title}"
+            "✅ Event created successfully\n\n"
+            f"🆔 ID: {reminder_id}\n"
+            f"📌 Title: {title}\n"
+            f"⏰ Time: {formatted_time}\n"
+            f"📝 Description: "
+            f"{description or 'None'}"
         )
     )
 
@@ -242,14 +326,14 @@ async def delete_event_callback(
 
     await query.edit_message_text(
         (
-            f"🗑 Event deleted\n"
-            f"ID: {reminder_id}"
+            "🗑 Event deleted successfully\n\n"
+            f"Event ID: {reminder_id}"
         )
     )
 
 
 def register_calendar_handlers(
-    application
+    application: Application
 ) -> None:
     application.add_handler(
         CommandHandler(
@@ -269,5 +353,13 @@ def register_calendar_handlers(
         CallbackQueryHandler(
             delete_event_callback,
             pattern=r"^delete_event_"
+        )
+    )
+
+    application.add_handler(
+        MessageHandler(
+            filters.TEXT
+            & ~filters.COMMAND,
+            create_event_message_handler
         )
     )
