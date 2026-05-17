@@ -4,7 +4,9 @@ import asyncio
 import logging
 import signal
 
-from dotenv import load_dotenv
+from dotenv import (
+    load_dotenv,
+)
 
 from app.core.scheduler import (
     scheduler_service,
@@ -17,7 +19,7 @@ from app.database.repositories.chat_memory import (
     chat_memory_repository,
 )
 from app.database.repositories.rclone_meta import (
-    RCloneMetaRepository,
+    RcloneMetaRepository,
 )
 from app.interfaces.telegram.bot import (
     TelegramBot,
@@ -38,22 +40,24 @@ logging.basicConfig(
         "%(name)s | "
         "%(levelname)s | "
         "%(message)s"
-    )
+    ),
 )
 
-logger = logging.getLogger(
-    __name__
-)
+logger = logging.getLogger(__name__)
 
 
 class TeleOpsApplication:
-    def __init__(self):
+    def __init__(self) -> None:
         self.bot = TelegramBot()
 
         self.running = False
 
         self.shutdown_event = (
             asyncio.Event()
+        )
+
+        self.rclone_repository = (
+            RcloneMetaRepository()
         )
 
     async def initialize(
@@ -66,8 +70,7 @@ class TeleOpsApplication:
         await init_db()
 
         logger.info(
-            "Initializing chat "
-            "memory tables..."
+            "Initializing chat memory tables..."
         )
 
         await (
@@ -76,16 +79,11 @@ class TeleOpsApplication:
         )
 
         logger.info(
-            "Initializing RClone "
-            "metadata tables..."
-        )
-
-        rclone_repository = (
-            RCloneMetaRepository()
+            "Initializing RClone metadata tables..."
         )
 
         await (
-            rclone_repository
+            self.rclone_repository
             .initialize_table()
         )
 
@@ -93,17 +91,21 @@ class TeleOpsApplication:
             "Loading plugins..."
         )
 
-        await plugin_loader.load_plugins()
+        await (
+            plugin_loader.load_plugins()
+        )
 
-        for plugin in (
-            plugin_loader
-            .list_plugins()
-        ):
+        plugins = (
+            plugin_loader.list_plugins()
+        )
+
+        for plugin in plugins:
             logger.info(
                 "Plugin loaded | "
-                "name=%s | enabled=%s",
-                plugin["name"],
-                plugin["enabled"]
+                "name=%s | "
+                "enabled=%s",
+                plugin.get("name"),
+                plugin.get("enabled")
             )
 
         logger.info(
@@ -111,19 +113,23 @@ class TeleOpsApplication:
             "application to scheduler..."
         )
 
-        scheduler_service.attach_application(
-            self.bot.application
+        await (
+            scheduler_service
+            .attach_application(
+                self.bot.application
+            )
         )
 
         logger.info(
             "Starting scheduler..."
         )
 
-        await scheduler_service.start()
+        await (
+            scheduler_service.start()
+        )
 
         logger.info(
-            "Restoring scheduled "
-            "reminders..."
+            "Restoring scheduled reminders..."
         )
 
         await (
@@ -132,8 +138,7 @@ class TeleOpsApplication:
         )
 
         logger.info(
-            "Core initialization "
-            "completed"
+            "Core initialization completed"
         )
 
     async def start_bot(
@@ -151,15 +156,33 @@ class TeleOpsApplication:
         if not self.running:
             return
 
-        self.running = False
-
         logger.info(
-            "Shutting down "
-            "TeleOps-AI..."
+            "Shutdown sequence started..."
         )
 
+        self.running = False
+
         try:
-            await scheduler_service.shutdown()
+            logger.info(
+                "Stopping Telegram bot..."
+            )
+
+            await self.bot.shutdown()
+
+        except Exception:
+            logger.exception(
+                "Telegram bot shutdown failed"
+            )
+
+        try:
+            logger.info(
+                "Stopping scheduler..."
+            )
+
+            await (
+                scheduler_service
+                .shutdown()
+            )
 
         except Exception:
             logger.exception(
@@ -167,15 +190,10 @@ class TeleOpsApplication:
             )
 
         try:
-            await self.bot.shutdown()
-
-        except Exception:
-            logger.exception(
-                "Telegram bot shutdown "
-                "failed"
+            logger.info(
+                "Closing database..."
             )
 
-        try:
             await close_database()
 
         except Exception:
@@ -183,26 +201,42 @@ class TeleOpsApplication:
                 "Database shutdown failed"
             )
 
-        logger.info(
-            "TeleOps-AI shutdown "
-            "completed"
-        )
-
         self.shutdown_event.set()
+
+        logger.info(
+            "TeleOps-AI shutdown completed"
+        )
 
     async def run(
         self
     ) -> None:
-        self.running = True
+        try:
+            self.running = True
 
-        await self.initialize()
+            await self.initialize()
 
-        logger.info(
-            "TeleOps-AI is fully "
-            "operational"
-        )
+            logger.info(
+                "TeleOps-AI is fully operational"
+            )
 
-        await self.start_bot()
+            await self.start_bot()
+
+            await (
+                self.shutdown_event.wait()
+            )
+
+        except asyncio.CancelledError:
+            logger.info(
+                "Application cancelled"
+            )
+
+        except Exception:
+            logger.exception(
+                "Fatal application error"
+            )
+
+        finally:
+            await self.shutdown()
 
 
 async def main() -> None:
@@ -210,9 +244,11 @@ async def main() -> None:
         TeleOpsApplication()
     )
 
-    loop = asyncio.get_running_loop()
+    loop = (
+        asyncio.get_running_loop()
+    )
 
-    def signal_handler() -> None:
+    def signal_handler():
         logger.info(
             "Shutdown signal received"
         )
@@ -225,17 +261,27 @@ async def main() -> None:
         signal.SIGINT,
         signal.SIGTERM
     ):
-        loop.add_signal_handler(
-            sig,
-            signal_handler
-        )
+        try:
+            loop.add_signal_handler(
+                sig,
+                signal_handler
+            )
 
-    try:
-        await application.run()
+        except NotImplementedError:
+            logger.warning(
+                "Signal handlers not "
+                "supported on this "
+                "platform"
+            )
 
-    finally:
-        await application.shutdown()
+    await application.run()
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+
+    except KeyboardInterrupt:
+        logger.info(
+            "Application interrupted"
+        )
