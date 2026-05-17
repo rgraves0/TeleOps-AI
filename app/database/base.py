@@ -1,9 +1,21 @@
 from __future__ import annotations
 
+import json
 import logging
 import os
 
 import aiosqlite
+
+from app.database.models import (
+    CREATE_USERS_TABLE,
+    CREATE_ROLES_TABLE,
+    CREATE_INBOXES_TABLE,
+    CREATE_REMINDERS_TABLE,
+    CREATE_AUDIT_LOGS_TABLE,
+    CREATE_USER_INBOXES_TABLE,
+    CREATE_INDEXES,
+    DEFAULT_ROLES,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +51,10 @@ async def init_db() -> None:
             aiosqlite.Row
         )
 
+        # =====================================================
+        # SQLITE SETTINGS
+        # =====================================================
+
         await _database_connection.execute(
             "PRAGMA journal_mode=WAL;"
         )
@@ -46,6 +62,66 @@ async def init_db() -> None:
         await _database_connection.execute(
             "PRAGMA foreign_keys=ON;"
         )
+
+        # =====================================================
+        # CREATE CORE TABLES
+        # =====================================================
+
+        await _database_connection.execute(
+            CREATE_ROLES_TABLE
+        )
+
+        await _database_connection.execute(
+            CREATE_USERS_TABLE
+        )
+
+        await _database_connection.execute(
+            CREATE_INBOXES_TABLE
+        )
+
+        await _database_connection.execute(
+            CREATE_REMINDERS_TABLE
+        )
+
+        await _database_connection.execute(
+            CREATE_AUDIT_LOGS_TABLE
+        )
+
+        await _database_connection.execute(
+            CREATE_USER_INBOXES_TABLE
+        )
+
+        # =====================================================
+        # CREATE INDEXES
+        # =====================================================
+
+        for index_query in CREATE_INDEXES:
+            await _database_connection.execute(
+                index_query
+            )
+
+        # =====================================================
+        # INSERT DEFAULT ROLES
+        # =====================================================
+
+        for role in DEFAULT_ROLES:
+            await _database_connection.execute(
+                """
+                INSERT OR IGNORE INTO roles (
+                    name,
+                    description,
+                    permissions
+                )
+                VALUES (?, ?, ?)
+                """,
+                (
+                    role["name"],
+                    role["description"],
+                    json.dumps(
+                        role["permissions"]
+                    )
+                )
+            )
 
         await _database_connection.commit()
 
