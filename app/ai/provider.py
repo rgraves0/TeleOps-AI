@@ -1,15 +1,17 @@
 from __future__ import annotations
 
+import logging
 import os
-from typing import Any
 
 import httpx
 from dotenv import load_dotenv
 
 load_dotenv()
 
+logger = logging.getLogger(__name__)
 
-class AIProviderException(Exception):
+
+class AIProviderError(Exception):
     pass
 
 
@@ -19,6 +21,13 @@ class AIProvider:
             "AI_PROVIDER",
             "groq"
         ).lower()
+
+        self.timeout = int(
+            os.getenv(
+                "AI_TIMEOUT_SECONDS",
+                "60"
+            )
+        )
 
         self.temperature = float(
             os.getenv(
@@ -34,245 +43,208 @@ class AIProvider:
             )
         )
 
-        self.timeout = int(
-            os.getenv(
-                "AI_TIMEOUT_SECONDS",
-                "60"
-            )
-        )
-
-        self.providers = {
-            "openai": {
-                "api_key": os.getenv(
-                    "OPENAI_API_KEY"
-                ),
-                "model": os.getenv(
-                    "OPENAI_MODEL",
-                    "gpt-4o-mini"
-                ),
-                "base_url": "https://api.openai.com/v1/chat/completions"
-            },
-
-            "groq": {
-                "api_key": os.getenv(
-                    "GROQ_API_KEY"
-                ),
-                "model": os.getenv(
-                    "GROQ_MODEL",
-                    "llama-3.1-70b-versatile"
-                ),
-                "base_url": "https://api.groq.com/openai/v1/chat/completions"
-            },
-
-            "openrouter": {
-                "api_key": os.getenv(
-                    "OPENROUTER_API_KEY"
-                ),
-                "model": os.getenv(
-                    "OPENROUTER_MODEL"
-                ),
-                "base_url": "https://openrouter.ai/api/v1/chat/completions"
-            },
-
-            "gemini": {
-                "api_key": os.getenv(
-                    "GEMINI_API_KEY"
-                ),
-                "model": os.getenv(
-                    "GEMINI_MODEL",
-                    "gemini-1.5-flash"
-                ),
-                "base_url": (
-                    "https://generativelanguage.googleapis.com"
-                    "/v1beta/models"
-                )
-            }
-        }
-
-    def _get_provider_config(self) -> dict:
-        config = self.providers.get(
-            self.provider
-        )
-
-        if config is None:
-            raise AIProviderException(
-                f"Unsupported provider: {self.provider}"
-            )
-
-        if not config["api_key"]:
-            raise AIProviderException(
-                f"Missing API key for provider: {self.provider}"
-            )
-
-        return config
-
-    async def generate_response(
+    async def chat_completion(
         self,
-        messages: list[dict[str, str]],
-        temperature: float | None = None,
-        max_tokens: int | None = None
+        messages: list[dict]
     ) -> str:
-        config = self._get_provider_config()
+        if self.provider == "groq":
+            return await self._groq_chat(
+                messages
+            )
 
         if self.provider == "gemini":
-            return await self._call_gemini(
-                config=config,
-                messages=messages,
-                temperature=temperature,
-                max_tokens=max_tokens
+            return await self._gemini_chat(
+                messages
             )
 
-        return await self._call_openai_compatible(
-            config=config,
-            messages=messages,
-            temperature=temperature,
-            max_tokens=max_tokens
+        if self.provider == "openai":
+            return await self._openai_chat(
+                messages
+            )
+
+        if self.provider == "openrouter":
+            return await self._openrouter_chat(
+                messages
+            )
+
+        raise AIProviderError(
+            f"Unsupported provider: "
+            f"{self.provider}"
         )
 
-    async def _call_openai_compatible(
+    async def _groq_chat(
         self,
-        config: dict,
-        messages: list[dict[str, str]],
-        temperature: float | None,
-        max_tokens: int | None
+        messages: list[dict]
     ) -> str:
-        payload = {
-            "model": config["model"],
-            "messages": messages,
-            "temperature": (
-                temperature
-                if temperature is not None
-                else self.temperature
-            ),
-            "max_tokens": (
-                max_tokens
-                if max_tokens is not None
-                else self.max_tokens
+        api_key = os.getenv(
+            "GROQ_API_KEY"
+        )
+
+        model = os.getenv(
+            "GROQ_MODEL",
+            "llama-3.1-70b-versatile"
+        )
+
+        if not api_key:
+            raise AIProviderError(
+                "Missing GROQ_API_KEY"
             )
-        }
+
+        url = (
+            "https://api.groq.com/"
+            "openai/v1/chat/completions"
+        )
 
         headers = {
             "Authorization": (
-                f"Bearer {config['api_key']}"
+                f"Bearer {api_key}"
             ),
-            "Content-Type": "application/json"
+            "Content-Type": (
+                "application/json"
+            )
         }
 
-        if self.provider == "openrouter":
-            headers["HTTP-Referer"] = (
-                "https://teleops-ai.local"
-            )
+        payload = {
+            "model": model,
+            "messages": messages,
+            "temperature": self.temperature,
+            "max_tokens": self.max_tokens
+        }
 
-            headers["X-Title"] = "TeleOps-AI"
+        logger.info(
+            "Sending Groq request..."
+        )
 
         async with httpx.AsyncClient(
             timeout=self.timeout
         ) as client:
             response = await client.post(
-                config["base_url"],
+                url,
                 headers=headers,
                 json=payload
             )
 
+        logger.info(
+            "Groq response status=%s",
+            response.status_code
+        )
+
         if response.status_code >= 400:
-            raise AIProviderException(
-                f"{self.provider} API error: "
-                f"{response.status_code} "
-                f"{response.text}"
+            raise AIProviderError(
+                response.text
             )
 
         data = response.json()
 
         try:
-            return (
-                data["choices"][0]
-                ["message"]["content"]
-                .strip()
+            return data["choices"][0][
+                "message"
+            ]["content"]
+
+        except Exception as exc:
+            logger.exception(
+                "Invalid Groq response"
             )
 
-        except (
-            KeyError,
-            IndexError
-        ) as exc:
-            raise AIProviderException(
-                "Invalid AI response format"
+            raise AIProviderError(
+                "Failed to parse "
+                "Groq response"
             ) from exc
 
-    async def _call_gemini(
+    async def _gemini_chat(
         self,
-        config: dict,
-        messages: list[dict[str, str]],
-        temperature: float | None,
-        max_tokens: int | None
+        messages: list[dict]
     ) -> str:
-        contents = []
+        api_key = os.getenv(
+            "GEMINI_API_KEY"
+        )
 
-        for message in messages:
-            role = (
-                "model"
-                if message["role"] == "assistant"
-                else "user"
+        model = os.getenv(
+            "GEMINI_MODEL",
+            "gemini-1.5-flash"
+        )
+
+        if not api_key:
+            raise AIProviderError(
+                "Missing GEMINI_API_KEY"
             )
 
-            contents.append({
-                "role": role,
-                "parts": [
-                    {
-                        "text": message["content"]
-                    }
-                ]
-            })
+        url = (
+            "https://generativelanguage.googleapis.com/"
+            f"v1beta/models/{model}:generateContent"
+            f"?key={api_key}"
+        )
+
+        prompt = "\n".join(
+            msg["content"]
+            for msg in messages
+        )
 
         payload = {
-            "contents": contents,
-            "generationConfig": {
-                "temperature": (
-                    temperature
-                    if temperature is not None
-                    else self.temperature
-                ),
-                "maxOutputTokens": (
-                    max_tokens
-                    if max_tokens is not None
-                    else self.max_tokens
-                )
-            }
+            "contents": [
+                {
+                    "parts": [
+                        {
+                            "text": prompt
+                        }
+                    ]
+                }
+            ]
         }
 
-        endpoint = (
-            f"{config['base_url']}/"
-            f"{config['model']}:generateContent"
-            f"?key={config['api_key']}"
+        logger.info(
+            "Sending Gemini request..."
         )
 
         async with httpx.AsyncClient(
             timeout=self.timeout
         ) as client:
             response = await client.post(
-                endpoint,
+                url,
                 json=payload
             )
 
+        logger.info(
+            "Gemini response status=%s",
+            response.status_code
+        )
+
         if response.status_code >= 400:
-            raise AIProviderException(
-                f"Gemini API error: "
-                f"{response.status_code} "
-                f"{response.text}"
+            raise AIProviderError(
+                response.text
             )
 
         data = response.json()
 
         try:
-            return (
-                data["candidates"][0]
-                ["content"]["parts"][0]["text"]
-                .strip()
+            return data["candidates"][0][
+                "content"
+            ]["parts"][0]["text"]
+
+        except Exception as exc:
+            logger.exception(
+                "Invalid Gemini response"
             )
 
-        except (
-            KeyError,
-            IndexError
-        ) as exc:
-            raise AIProviderException(
-                "Invalid Gemini response format"
+            raise AIProviderError(
+                "Failed to parse "
+                "Gemini response"
             ) from exc
+
+    async def _openai_chat(
+        self,
+        messages: list[dict]
+    ) -> str:
+        raise AIProviderError(
+            "OpenAI provider "
+            "not implemented yet"
+        )
+
+    async def _openrouter_chat(
+        self,
+        messages: list[dict]
+    ) -> str:
+        raise AIProviderError(
+            "OpenRouter provider "
+            "not implemented yet"
+        )
