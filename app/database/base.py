@@ -18,12 +18,15 @@ _database_connection = None
 async def init_db() -> None:
     global _database_connection
 
-    os.makedirs(
-        os.path.dirname(
-            DATABASE_PATH
-        ),
-        exist_ok=True
+    database_directory = os.path.dirname(
+        DATABASE_PATH
     )
+
+    if database_directory:
+        os.makedirs(
+            database_directory,
+            exist_ok=True
+        )
 
     if _database_connection is None:
         _database_connection = (
@@ -60,6 +63,10 @@ async def get_db():
         await init_db()
 
     return _database_connection
+
+
+async def get_database_connection():
+    return await get_db()
 
 
 async def close_database() -> None:
