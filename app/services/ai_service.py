@@ -25,6 +25,24 @@ from app.plugins.loader import (
 logger = logging.getLogger(__name__)
 
 
+SUMMARY_PROMPT = """
+You are TeleOps-AI, a Telegram-native AI assistant.
+
+Your job is to convert raw tool outputs into natural conversational replies.
+
+Rules:
+- Never expose raw JSON.
+- Never expose internal intents, confidence values, or system reasoning.
+- Keep responses concise and human-friendly.
+- Reply in the SAME language used by the user.
+- If the user used Burmese, reply naturally in Burmese.
+- If the user used English, reply naturally in English.
+- Summarize tool outputs clearly.
+- If tools fail, explain the failure politely and naturally.
+- Avoid robotic wording.
+"""
+
+
 class AIService:
     def __init__(self):
         self.provider = AIProvider()
@@ -147,18 +165,26 @@ class AIService:
                 )
             )
 
+            tool_error = (
+                tool_execution.get(
+                    "error",
+                    False
+                )
+            )
+
             summarized_response = (
                 await self.summarize_tool_output(
+                    original_user_message=message,
                     intent_result=intent_result,
-                    raw_output=raw_output
+                    raw_output=raw_output,
+                    tool_error=tool_error
                 )
             )
 
             return {
                 "type": "tool",
                 "response": summarized_response,
-                "intent_data": intent_result,
-                "raw_output": raw_output
+                "intent_data": intent_result
             }
 
         except Exception as exc:
@@ -167,11 +193,15 @@ class AIService:
                 exc
             )
 
+            fallback_response = (
+                await self.generate_friendly_error(
+                    user_message=message
+                )
+            )
+
             return {
                 "type": "error",
-                "response": (
-                    "❌ AI processing failed."
-                )
+                "response": fallback_response
             }
 
     def detect_route_type(
@@ -331,18 +361,33 @@ class AIService:
                 "intent": intent,
                 "raw_output": (
                     fallback_response
-                )
+                ),
+                "error": False
             }
 
-        result = await handler(
-            intent_data,
-            original_message
-        )
+        try:
+            result = await handler(
+                intent_data,
+                original_message
+            )
 
-        return {
-            "intent": intent,
-            "raw_output": result
-        }
+            return {
+                "intent": intent,
+                "raw_output": result,
+                "error": False
+            }
+
+        except Exception as exc:
+            logger.exception(
+                "Tool dispatch failed: %s",
+                exc
+            )
+
+            return {
+                "intent": intent,
+                "raw_output": str(exc),
+                "error": True
+            }
 
     async def handle_weather(
         self,
@@ -356,8 +401,8 @@ class AIService:
         )
 
         if plugin is None:
-            return (
-                "Weather plugin "
+            raise RuntimeError(
+                "Weather service "
                 "is unavailable."
             )
 
@@ -398,8 +443,8 @@ class AIService:
         )
 
         if plugin is None:
-            return (
-                "Web search plugin "
+            raise RuntimeError(
+                "Web search service "
                 "is unavailable."
             )
 
@@ -497,8 +542,10 @@ class AIService:
 
     async def summarize_tool_output(
         self,
+        original_user_message: str,
         intent_result: dict[str, Any],
-        raw_output: str
+        raw_output: str,
+        tool_error: bool = False
     ) -> str:
         intent = (
             intent_result.get(
@@ -507,37 +554,103 @@ class AIService:
             )
         )
 
+        if tool_error:
+            instruction = (
+                "The tool execution failed. "
+                "Explain the failure politely "
+                "without exposing raw system "
+                "errors."
+            )
+
+        else:
+            instruction = (
+                "Summarize the tool result "
+                "naturally and conversationally."
+            )
+
         summary_prompt = [
             {
                 "role": "system",
-                "content": (
-                    "You are a Telegram AI "
-                    "assistant.\n"
-                    "Summarize tool results "
-                    "naturally for users.\n"
-                    "Do not expose raw JSON "
-                    "or internal intent data.\n"
-                    "Keep responses concise, "
-                    "helpful, and conversational."
-                )
+                "content": SUMMARY_PROMPT
             },
             {
                 "role": "user",
                 "content": (
-                    f"Intent: {intent}\n\n"
-                    f"Tool Result:\n"
+                    f"Original User Message:\n"
+                    f"{original_user_message}\n\n"
+                    f"Intent:\n"
+                    f"{intent}\n\n"
+                    f"Instruction:\n"
+                    f"{instruction}\n\n"
+                    f"Raw Tool Result:\n"
                     f"{raw_output}"
                 )
             }
         ]
 
-        response = await (
-            self.provider.generate_response(
-                messages=summary_prompt
+        try:
+            response = await (
+                self.provider.generate_response(
+                    messages=summary_prompt,
+                    temperature=0.4
+                )
             )
-        )
 
-        return response
+            return response
+
+        except Exception as exc:
+            logger.exception(
+                "Tool summarization failed: %s",
+                exc
+            )
+
+            if tool_error:
+                return (
+                    "⚠️ Sorry, I couldn't "
+                    "complete that request "
+                    "right now."
+                )
+
+            return (
+                "⚠️ I received the result, "
+                "but couldn't summarize it "
+                "properly."
+            )
+
+    async def generate_friendly_error(
+        self,
+        user_message: str
+    ) -> str:
+        prompt = [
+            {
+                "role": "system",
+                "content": SUMMARY_PROMPT
+            },
+            {
+                "role": "user",
+                "content": (
+                    "Generate a polite AI "
+                    "assistant error reply "
+                    "for the following user "
+                    f"message:\n{user_message}"
+                )
+            }
+        ]
+
+        try:
+            return await (
+                self.provider.generate_response(
+                    messages=prompt,
+                    temperature=0.3
+                )
+            )
+
+        except Exception:
+            return (
+                "⚠️ Sorry, something went "
+                "wrong while processing "
+                "your request."
+            )
 
     async def handle_chat_fallback(
         self,
