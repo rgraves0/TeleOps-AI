@@ -11,9 +11,6 @@ from telegram.ext import (
     ContextTypes,
 )
 
-from app.database.base import (
-    get_db,
-)
 from app.interfaces.telegram.handlers import (
     register_handlers,
 )
@@ -69,20 +66,42 @@ class TelegramBot:
             "Stopping Telegram polling..."
         )
 
-        if self.application.updater:
-            await self.application.updater.stop()
+        try:
+            if (
+                self.application.updater
+                and self.application.updater.running
+            ):
+                await self.application.updater.stop()
+
+        except Exception:
+            logger.exception(
+                "Failed stopping updater"
+            )
 
         logger.info(
             "Stopping Telegram application..."
         )
 
-        await self.application.stop()
+        try:
+            if self.application.running:
+                await self.application.stop()
+
+        except Exception:
+            logger.exception(
+                "Failed stopping application"
+            )
 
         logger.info(
             "Shutting down Telegram application..."
         )
 
-        await self.application.shutdown()
+        try:
+            await self.application.shutdown()
+
+        except Exception:
+            logger.exception(
+                "Failed shutting down application"
+            )
 
         logger.info(
             "Telegram bot shutdown completed"
@@ -114,20 +133,43 @@ class TelegramBot:
         self,
         update: Update
     ) -> None:
-        context = (
-            self.application.context_types.context.from_update(
-                update,
-                self.application
-            )
-        )
 
         try:
+            context = (
+                self.application.context_types.context.from_update(
+                    update,
+                    self.application
+                )
+            )
+
             await auth_middleware(
                 update,
                 context
             )
 
+            # =====================================================
+            # PRESERVE USER DATA BETWEEN UPDATES
+            # =====================================================
+
+            if update.effective_user:
+                telegram_user_id = (
+                    update.effective_user.id
+                )
+
+                persistent_user_data = (
+                    self.application.user_data[
+                        telegram_user_id
+                    ]
+                )
+
+                persistent_user_data.update(
+                    context.user_data
+                )
+
         except Exception:
+            logger.exception(
+                "Authentication middleware failed"
+            )
             return
 
         await self.original_process_update(
