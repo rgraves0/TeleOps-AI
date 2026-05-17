@@ -6,6 +6,7 @@ from telegram import (
     Update,
 )
 from telegram.ext import (
+    Application,
     CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
@@ -37,6 +38,13 @@ async def admin_panel_command(
         await user_repository.list_users()
     )
 
+    if not users:
+        await update.effective_message.reply_text(
+            "No users found."
+        )
+
+        return
+
     keyboard = []
 
     for user in users:
@@ -53,13 +61,11 @@ async def admin_panel_command(
             )
         ])
 
-    reply_markup = InlineKeyboardMarkup(
-        keyboard
-    )
-
     await update.effective_message.reply_text(
         "🛡 Admin Control Panel",
-        reply_markup=reply_markup
+        reply_markup=InlineKeyboardMarkup(
+            keyboard
+        )
     )
 
 
@@ -85,7 +91,7 @@ async def admin_user_callback(
 
     if user is None:
         await query.edit_message_text(
-            "User not found"
+            "❌ User not found"
         )
 
         return
@@ -111,11 +117,16 @@ async def admin_user_callback(
         ]
     ]
 
+    message = (
+        f"👤 User Information\n\n"
+        f"Name: {user['full_name']}\n"
+        f"Username: @{user['username']}\n"
+        f"Role: {user['role_name']}\n"
+        f"Telegram ID: {user['telegram_id']}"
+    )
+
     await query.edit_message_text(
-        (
-            f"👤 {user['full_name']}\n"
-            f"Role: {user['role_name']}"
-        ),
+        message,
         reply_markup=InlineKeyboardMarkup(
             keyboard
         )
@@ -143,6 +154,10 @@ async def promote_user_callback(
     )
 
     if user is None:
+        await query.edit_message_text(
+            "❌ User not found"
+        )
+
         return
 
     await auth_service.assign_role(
@@ -150,11 +165,24 @@ async def promote_user_callback(
         role_name="admin"
     )
 
+    updated_user = (
+        await user_repository.get_by_id(
+            user_id
+        )
+    )
+
+    role_name = "admin"
+
+    if updated_user:
+        role_name = (
+            updated_user["role_name"]
+        )
+
     await query.edit_message_text(
         (
-            f"✅ User promoted\n\n"
-            f"{user['full_name']} "
-            f"is now admin."
+            f"✅ User promoted successfully\n\n"
+            f"👤 Name: {user['full_name']}\n"
+            f"🛡 New Role: {role_name}"
         )
     )
 
@@ -180,6 +208,10 @@ async def ban_user_callback(
     )
 
     if user is None:
+        await query.edit_message_text(
+            "❌ User not found"
+        )
+
         return
 
     await user_repository.ban_user(
@@ -189,13 +221,13 @@ async def ban_user_callback(
     await query.edit_message_text(
         (
             f"🚫 User banned\n\n"
-            f"{user['full_name']}"
+            f"👤 {user['full_name']}"
         )
     )
 
 
 def register_admin_handlers(
-    application
+    application: Application
 ) -> None:
     application.add_handler(
         CommandHandler(
