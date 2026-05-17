@@ -70,7 +70,7 @@ class TeleOpsApplication:
         await init_db()
 
         logger.info(
-            "Initializing chat memory tables..."
+            "Initializing chat memory..."
         )
 
         await (
@@ -79,7 +79,7 @@ class TeleOpsApplication:
         )
 
         logger.info(
-            "Initializing RClone metadata tables..."
+            "Initializing RClone metadata..."
         )
 
         await (
@@ -92,18 +92,19 @@ class TeleOpsApplication:
         )
 
         await (
-            plugin_loader.load_plugins()
+            plugin_loader
+            .load_all_plugins()
         )
 
         plugins = (
-            plugin_loader.list_plugins()
+            plugin_loader
+            .list_plugins()
         )
 
         for plugin in plugins:
             logger.info(
                 "Plugin loaded | "
-                "name=%s | "
-                "enabled=%s",
+                "name=%s | enabled=%s",
                 plugin.get("name"),
                 plugin.get("enabled")
             )
@@ -129,7 +130,7 @@ class TeleOpsApplication:
         )
 
         logger.info(
-            "Restoring scheduled reminders..."
+            "Restoring reminder jobs..."
         )
 
         await (
@@ -138,7 +139,7 @@ class TeleOpsApplication:
         )
 
         logger.info(
-            "Core initialization completed"
+            "Initialization completed"
         )
 
     async def start_bot(
@@ -216,7 +217,7 @@ class TeleOpsApplication:
             await self.initialize()
 
             logger.info(
-                "TeleOps-AI is fully operational"
+                "TeleOps-AI is operational"
             )
 
             await self.start_bot()
@@ -248,7 +249,7 @@ async def main() -> None:
         asyncio.get_running_loop()
     )
 
-    def signal_handler():
+    def handle_shutdown_signal():
         logger.info(
             "Shutdown signal received"
         )
@@ -257,21 +258,21 @@ async def main() -> None:
             application.shutdown()
         )
 
-    for sig in (
+    for shutdown_signal in (
         signal.SIGINT,
         signal.SIGTERM
     ):
         try:
             loop.add_signal_handler(
-                sig,
-                signal_handler
+                shutdown_signal,
+                handle_shutdown_signal
             )
 
         except NotImplementedError:
             logger.warning(
-                "Signal handlers not "
-                "supported on this "
-                "platform"
+                "Signal handlers are "
+                "not supported on "
+                "this platform"
             )
 
     await application.run()
