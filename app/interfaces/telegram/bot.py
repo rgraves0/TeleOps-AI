@@ -8,7 +8,8 @@ from telegram import Update
 from telegram.ext import (
     Application,
     ContextTypes,
-    TypeHandler,
+    MessageHandler,
+    filters,
 )
 
 from app.database.base import (
@@ -94,9 +95,9 @@ class TelegramBot:
 
     def setup(self) -> None:
         self.application.add_handler(
-            TypeHandler(
-                type=Update,
-                callback=auth_middleware
+            MessageHandler(
+                filters.ALL,
+                auth_middleware
             ),
             group=-1
         )
