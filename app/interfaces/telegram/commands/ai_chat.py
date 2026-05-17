@@ -27,7 +27,7 @@ async def ai_command(
     if not update.effective_message:
         return
 
-    context.user_data[
+    context.chat_data[
         "ai_chat_mode"
     ] = True
 
@@ -43,7 +43,7 @@ async def ai_chat_handler(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
 ) -> None:
-    if not context.user_data.get(
+    if not context.chat_data.get(
         "ai_chat_mode"
     ):
         return
@@ -173,7 +173,7 @@ async def exit_ai_chat_command(
     if not update.effective_message:
         return
 
-    context.user_data[
+    context.chat_data[
         "ai_chat_mode"
     ] = False
 
