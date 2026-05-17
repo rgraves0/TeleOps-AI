@@ -8,11 +8,11 @@ from telegram import Update
 from telegram.ext import (
     Application,
     ContextTypes,
+    TypeHandler,
 )
 
 from app.database.base import (
     db,
-    init_db,
 )
 from app.interfaces.telegram.handlers import (
     register_handlers,
@@ -55,13 +55,7 @@ class TelegramBot:
 
     async def startup(self) -> None:
         logger.info(
-            "Initializing database..."
-        )
-
-        await init_db()
-
-        logger.info(
-            "Database initialized"
+            "Telegram bot startup completed"
         )
 
     async def shutdown(self) -> None:
@@ -72,7 +66,7 @@ class TelegramBot:
         await db.disconnect()
 
         logger.info(
-            "Shutdown complete"
+            "Telegram bot shutdown completed"
         )
 
     async def global_error_handler(
@@ -93,11 +87,17 @@ class TelegramBot:
                     )
 
                 except Exception:
-                    pass
+                    logger.exception(
+                        "Failed to send "
+                        "error message"
+                    )
 
     def setup(self) -> None:
         self.application.add_handler(
-            auth_middleware,
+            TypeHandler(
+                type=Update,
+                callback=auth_middleware
+            ),
             group=-1
         )
 
@@ -109,23 +109,43 @@ class TelegramBot:
             self.global_error_handler
         )
 
+        logger.info(
+            "Telegram handlers registered"
+        )
+
     async def run(self) -> None:
         await self.startup()
 
         self.setup()
 
         logger.info(
-            "Starting Telegram bot polling..."
+            "Initializing Telegram application..."
         )
 
         await self.application.initialize()
 
+        logger.info(
+            "Starting Telegram application..."
+        )
+
         await self.application.start()
 
-        await self.application.updater.start_polling()
+        if self.application.updater is None:
+            raise RuntimeError(
+                "Telegram updater is unavailable"
+            )
 
         logger.info(
-            "Bot started successfully"
+            "Starting Telegram polling..."
+        )
+
+        await self.application.updater.start_polling(
+            allowed_updates=Update.ALL_TYPES,
+            drop_pending_updates=False
+        )
+
+        logger.info(
+            "Telegram bot is running"
         )
 
         try:
@@ -133,12 +153,20 @@ class TelegramBot:
 
         finally:
             logger.info(
-                "Stopping Telegram bot..."
+                "Stopping Telegram polling..."
             )
 
             await self.application.updater.stop()
 
+            logger.info(
+                "Stopping Telegram application..."
+            )
+
             await self.application.stop()
+
+            logger.info(
+                "Shutting down Telegram application..."
+            )
 
             await self.application.shutdown()
 
