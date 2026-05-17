@@ -99,7 +99,7 @@ async def admin_user_callback(
     keyboard = [
         [
             InlineKeyboardButton(
-                "Promote Admin",
+                text="Promote Admin",
                 callback_data=(
                     f"promote_"
                     f"{user_id}"
@@ -108,7 +108,7 @@ async def admin_user_callback(
         ],
         [
             InlineKeyboardButton(
-                "Ban User",
+                text="Ban User",
                 callback_data=(
                     f"ban_"
                     f"{user_id}"
@@ -117,16 +117,22 @@ async def admin_user_callback(
         ]
     ]
 
+    username = (
+        f"@{user['username']}"
+        if user["username"]
+        else "No username"
+    )
+
     message = (
-        f"👤 User Information\n\n"
+        "👤 User Information\n\n"
         f"Name: {user['full_name']}\n"
-        f"Username: @{user['username']}\n"
+        f"Username: {username}\n"
         f"Role: {user['role_name']}\n"
         f"Telegram ID: {user['telegram_id']}"
     )
 
     await query.edit_message_text(
-        message,
+        text=message,
         reply_markup=InlineKeyboardMarkup(
             keyboard
         )
@@ -180,7 +186,7 @@ async def promote_user_callback(
 
     await query.edit_message_text(
         (
-            f"✅ User promoted successfully\n\n"
+            "✅ User promoted successfully\n\n"
             f"👤 Name: {user['full_name']}\n"
             f"🛡 New Role: {role_name}"
         )
@@ -220,7 +226,7 @@ async def ban_user_callback(
 
     await query.edit_message_text(
         (
-            f"🚫 User banned\n\n"
+            "🚫 User banned successfully\n\n"
             f"👤 {user['full_name']}"
         )
     )
