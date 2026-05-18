@@ -438,8 +438,15 @@ class AIService:
         )
 
         try:
+            cleaned_response = (
+            raw_response
+            .replace("```json", "")
+            .replace("```", "")
+            .strip()
+            )
+
             parsed = json.loads(
-                raw_response
+            cleaned_response
             )
 
             if not isinstance(
